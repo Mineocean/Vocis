@@ -31,54 +31,9 @@ from PySide6.QtWidgets import (
 )
 import sounddevice as sd
 
-from backend.config import get_config
+from backend.config import get_config, read_env_file, write_env_file, env_path, reload_config
 
 logger = logging.getLogger(__name__)
-
-
-def _env_path() -> Path:
-    return Path(__file__).parent.parent / ".env"
-
-
-def _read_env() -> dict[str, str]:
-    env = {}
-    path = _env_path()
-    if not path.exists():
-        return env
-    for line in path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        k, _, v = line.partition("=")
-        env[k.strip()] = v.strip().strip('"').strip("'")
-    return env
-
-
-def _write_env(env: dict[str, str]):
-    path = _env_path()
-    if not path.exists():
-        lines = [f"{k}={v}\n" for k, v in env.items()]
-        path.write_text("".join(lines), encoding="utf-8")
-        return
-    existing = path.read_text(encoding="utf-8").splitlines()
-    updated_keys = set()
-    new_lines = []
-    for line in existing:
-        stripped = line.strip()
-        if stripped and not stripped.startswith("#") and "=" in stripped:
-            k = stripped.split("=")[0].strip()
-            if k in env:
-                new_lines.append(f"{k}={env[k]}")
-                updated_keys.add(k)
-                continue
-        new_lines.append(line)
-    for k, v in env.items():
-        if k not in updated_keys:
-            new_lines.append(f"{k}={v}")
-    content = "\n".join(new_lines)
-    if not content.endswith("\n"):
-        content += "\n"
-    path.write_text(content, encoding="utf-8")
 
 
 class SettingsDialog(QDialog):
@@ -89,7 +44,7 @@ class SettingsDialog(QDialog):
         self.setWindowTitle("Vocis 设置")
         self.setMinimumWidth(520)
         self.setMinimumHeight(460)
-        self._env = _read_env()
+        self._env = read_env_file()
         self._build_ui()
         self._load_values()
 
@@ -355,16 +310,12 @@ class SettingsDialog(QDialog):
         devices = ["cuda", "cpu", "auto"]
         env["WHISPER_DEVICE"] = devices[self._whisper_device.currentIndex()]
 
-        _write_env(env)
+        write_env_file(env)
         logger.info("设置已保存")
 
         import dotenv
-        dotenv.load_dotenv(_env_path(), override=True)
-        cfg = get_config()
-        cfg.asr.api_key = env["MIMO_API_KEY"]
-        cfg.asr.language = env["SOURCE_LANGUAGE"]
-        cfg.translator.api_key = env["DEEPSEEK_API_KEY"]
-        cfg.translator.target_language = env["TARGET_LANGUAGE"]
+        dotenv.load_dotenv(env_path(), override=True)
+        reload_config()
 
     def _save_and_close(self):
         self._save()

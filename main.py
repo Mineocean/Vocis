@@ -6,7 +6,6 @@ Vocis（声幕）—— 实时语音识别 + AI 翻译屏幕字幕。
 """
 
 import logging
-import signal
 import sys
 from pathlib import Path
 
@@ -57,7 +56,7 @@ class HotkeyManager:
             from pynput import keyboard
 
             def toggle():
-                if self.pipeline._paused:
+                if self.pipeline.is_paused:
                     self.pipeline.resume()
                     logger.info("热键：已恢复")
                 else:
@@ -86,7 +85,7 @@ class HotkeyManager:
 class VocisMainWindow(QMainWindow):
     """Vocis 主窗口 —— 包含菜单栏和工具栏（课程设计要求）"""
 
-    def __init__(self, pipeline, overlay, tray):
+    def __init__(self, pipeline: SubtitlePipeline, overlay: SubtitleOverlay, tray: SubtitleTray):
         super().__init__()
         self.pipeline = pipeline
         self.overlay = overlay
@@ -164,7 +163,7 @@ class VocisMainWindow(QMainWindow):
         toolbar.addAction(quit_btn)
 
     def _toggle_pipeline(self):
-        if self.pipeline._paused:
+        if self.pipeline.is_paused:
             self.pipeline.resume()
             self._toggle_action.setText("暂停(&P)")
         else:
@@ -249,8 +248,7 @@ class VocisApp:
 
 def main():
     app = VocisApp()
-    signal.signal(signal.SIGINT, lambda *_: app.stop())
-    signal.signal(signal.SIGTERM, lambda *_: app.stop())
+    app.app.aboutToQuit.connect(app.stop)
     timer = QTimer()
     timer.start(500)
     timer.timeout.connect(lambda: None)

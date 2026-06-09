@@ -7,6 +7,7 @@
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Optional
 
 import dotenv
 
@@ -17,6 +18,54 @@ if _env_path.exists():
 
 def _env(key: str, default: str = "") -> str:
     return os.getenv(key, default)
+
+
+def env_path() -> Path:
+    """返回 .env 文件路径"""
+    return _env_path
+
+
+def read_env_file(path: Optional[Path] = None) -> dict[str, str]:
+    """读取 .env 文件为 dict，保留注释和格式信息以外的键值对"""
+    p = path or _env_path
+    env: dict[str, str] = {}
+    if not p.exists():
+        return env
+    for line in p.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, _, v = line.partition("=")
+        env[k.strip()] = v.strip().strip('"').strip("'")
+    return env
+
+
+def write_env_file(env: dict[str, str], path: Optional[Path] = None):
+    """写入 .env 文件，保留原有注释和格式"""
+    p = path or _env_path
+    if not p.exists():
+        lines = [f"{k}={v}\n" for k, v in env.items()]
+        p.write_text("".join(lines), encoding="utf-8")
+        return
+    existing = p.read_text(encoding="utf-8").splitlines()
+    updated_keys: set[str] = set()
+    new_lines: list[str] = []
+    for line in existing:
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#") and "=" in stripped:
+            k = stripped.split("=")[0].strip()
+            if k in env:
+                new_lines.append(f"{k}={env[k]}")
+                updated_keys.add(k)
+                continue
+        new_lines.append(line)
+    for k, v in env.items():
+        if k not in updated_keys:
+            new_lines.append(f"{k}={v}")
+    content = "\n".join(new_lines)
+    if not content.endswith("\n"):
+        content += "\n"
+    p.write_text(content, encoding="utf-8")
 
 
 @dataclass
@@ -67,6 +116,19 @@ class AppConfig:
     silence_duration_ms: int = 600
 
 
+_config_instance: Optional[AppConfig] = None
+
+
 def get_config() -> AppConfig:
     """获取全局配置单例"""
-    return AppConfig()
+    global _config_instance
+    if _config_instance is None:
+        _config_instance = AppConfig()
+    return _config_instance
+
+
+def reload_config() -> AppConfig:
+    """重新加载配置（用于 .env 更新后）"""
+    global _config_instance
+    _config_instance = AppConfig()
+    return _config_instance

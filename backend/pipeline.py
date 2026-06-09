@@ -35,7 +35,14 @@ class SubtitlePipeline:
         self._thread: Optional[threading.Thread] = None
         self._on_subtitle: Optional[Callable[[str, str], None]] = None
         self._paused = False
+        self._pause_lock = threading.Lock()
         self._pending_lang: Optional[str] = None
+
+    @property
+    def is_paused(self) -> bool:
+        """线程安全地读取暂停状态"""
+        with self._pause_lock:
+            return self._paused
 
     def on_subtitle(self, callback: Callable[[str, str], None]):
         """注册字幕回调：callback(original, translation)"""
@@ -60,11 +67,13 @@ class SubtitlePipeline:
         logger.info("流水线已停止")
 
     def pause(self):
-        self._paused = True
+        with self._pause_lock:
+            self._paused = True
         logger.info("流水线已暂停")
 
     def resume(self):
-        self._paused = False
+        with self._pause_lock:
+            self._paused = False
         self.vad.reset()  # 恢复时重置 VAD，丢弃暂停期间积累的残留
         logger.info("流水线已恢复")
 
@@ -91,7 +100,7 @@ class SubtitlePipeline:
                 if len(chunk) == 0:
                     continue  # 超时，无数据
 
-                if self._paused:
+                if self.is_paused:
                     # 暂停时丢弃音频块，不处理
                     continue
 

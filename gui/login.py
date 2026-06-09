@@ -21,6 +21,8 @@ from PySide6.QtWidgets import (
     QGroupBox,
 )
 
+from backend.config import read_env_file, write_env_file, env_path
+
 
 class LoginDialog(QDialog):
     """Vocis 登录窗口"""
@@ -42,16 +44,7 @@ class LoginDialog(QDialog):
             self.setWindowIcon(QIcon(str(icon_path)))
 
     def _read_env(self) -> dict:
-        env = {}
-        path = Path(__file__).parent.parent / ".env"
-        if path.exists():
-            for line in path.read_text(encoding="utf-8").splitlines():
-                line = line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                k, _, v = line.partition("=")
-                env[k.strip()] = v.strip().strip('"').strip("'")
-        return env
+        return read_env_file()
 
     def _build_ui(self):
         layout = QVBoxLayout(self)
@@ -139,10 +132,7 @@ class LoginDialog(QDialog):
             env["MIMO_API_KEY"] = mimo
         if deepseek:
             env["DEEPSEEK_API_KEY"] = deepseek
-
-        path = Path(__file__).parent.parent / ".env"
-        lines = [f"{k}={v}\n" for k, v in env.items()]
-        path.write_text("".join(lines), encoding="utf-8")
+        write_env_file(env)
 
     def get_keys(self) -> tuple:
         return (

@@ -64,6 +64,7 @@ class MiMoASR(ASREngine):
         self.language = cfg.asr.language
         self.model = cfg.asr.model
         self._client: Optional[httpx.Client] = None
+        self._closed = False
 
         # URL 规范化
         base = cfg.asr.base_url.rstrip("/")
@@ -77,6 +78,8 @@ class MiMoASR(ASREngine):
 
     @property
     def client(self) -> httpx.Client:
+        if self._closed:
+            raise RuntimeError("MiMoASR 已关闭")
         if self._client is None:
             self._client = httpx.Client(
                 base_url=self.base_url,
@@ -133,6 +136,7 @@ class MiMoASR(ASREngine):
             return None
 
     def close(self):
+        self._closed = True
         if self._client:
             self._client.close()
             self._client = None
@@ -237,7 +241,6 @@ class WhisperASR(ASREngine):
 class MockASR(ASREngine):
     """模拟 ASR——用于测试翻译和 GUI 链路，不调用任何 API"""
 
-    _counter = 0
     _mock_texts = [
         "Hello, how are you today?",
         "The weather is beautiful outside.",
@@ -249,11 +252,14 @@ class MockASR(ASREngine):
         "Let's grab some coffee after work.",
     ]
 
+    def __init__(self):
+        self._counter = 0
+
     def transcribe(self, audio_pcm: bytes) -> Optional[str]:
         if not audio_pcm:
             return None
         text = self._mock_texts[self._counter % len(self._mock_texts)]
-        MockASR._counter += 1
+        self._counter += 1
         logger.info("Mock ASR: %s", text)
         return text
 

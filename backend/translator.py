@@ -76,9 +76,12 @@ class DeepSeekTranslator:
         self._prev_original: Optional[str] = None
         self._prev_translation: Optional[str] = None
         self._client: Optional[httpx.Client] = None
+        self._closed = False
 
     @property
     def client(self) -> httpx.Client:
+        if self._closed:
+            raise RuntimeError("DeepSeekTranslator 已关闭")
         if self._client is None:
             self._client = httpx.Client(
                 base_url=self.base_url,
@@ -150,7 +153,7 @@ class DeepSeekTranslator:
                 return None
             except Exception as e:
                 last_err = e
-                if attempt < 2:
+                if attempt < 2 and not self._closed:
                     import time
                     logger.warning("翻译重试 %d/3: %s", attempt + 1, e)
                     time.sleep(1.0 * (attempt + 1))
@@ -173,6 +176,7 @@ class DeepSeekTranslator:
         self._prev_translation = None
 
     def close(self):
+        self._closed = True
         if self._client:
             self._client.close()
             self._client = None

@@ -10,7 +10,7 @@ GUI —— 可拖拽 / 可调整大小的字幕叠加层 + 系统托盘。
 
 import logging
 from pathlib import Path
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
 from PySide6.QtCore import Qt, QTimer, QPoint, QSize, QRect, Signal, QObject
 from PySide6.QtGui import (
@@ -21,7 +21,10 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
-from backend.config import get_config
+from backend.config import get_config, read_env_file
+
+if TYPE_CHECKING:
+    from backend.pipeline import SubtitlePipeline
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +47,8 @@ class SubtitleOverlay(QWidget):
         self._drag_start = QPoint()
         self._resize_start = QSize()
         self._hide_delay_ms = 5000
+        self._position = "bottom"  # bottom / center / top
+        self._screen_index = 0
 
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint
@@ -55,11 +60,7 @@ class SubtitleOverlay(QWidget):
         self.setMouseTracking(True)
         self.resize(520, 80)
 
-        # 初始位置：屏幕底部中央
-        screen = QApplication.primaryScreen()
-        if screen:
-            g = screen.availableGeometry()
-            self.move(g.center().x() - 260, g.bottom() - 120)
+        self._apply_position()
 
         # ── 内容容器 ──
         self._content = QWidget(self)
@@ -95,6 +96,31 @@ class SubtitleOverlay(QWidget):
 
         # 连接跨线程信号
         self.subtitle_signal.connect(self.show_subtitle)
+
+    def _get_target_screen(self):
+        """获取目标屏幕"""
+        screens = QApplication.screens()
+        if 0 <= self._screen_index < len(screens):
+            return screens[self._screen_index]
+        return QApplication.primaryScreen()
+
+    def _apply_position(self):
+        """根据配置设置字幕位置"""
+        screen = self._get_target_screen()
+        if not screen:
+            return
+        g = screen.availableGeometry()
+        w, h = self.width(), self.height()
+        x = g.center().x() - w // 2
+
+        if self._position == "top":
+            y = g.top() + 40
+        elif self._position == "center":
+            y = g.center().y() - h // 2
+        else:  # bottom
+            y = g.bottom() - h - 40
+
+        self.move(x, y)
 
     # ── 布局 ──────────────────────────────────────────
 
@@ -172,6 +198,7 @@ class SubtitleOverlay(QWidget):
         h = max(50, th + 24)
         self.resize(w, h)
 
+        self._apply_position()
         self.show()
         if self._hide_delay_ms > 0:
             self._hide_timer.start(self._hide_delay_ms)
@@ -184,23 +211,18 @@ class SubtitleOverlay(QWidget):
         self.hide()
 
     def apply_settings(self):
-        env = {}
-        ep = Path(__file__).parent.parent / ".env"
-        if ep.exists():
-            for line in ep.read_text(encoding="utf-8").splitlines():
-                line = line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                k, _, v = line.partition("=")
-                env[k.strip()] = v.strip().strip('"').strip("'")
+        env = read_env_file()
         fs = int(env.get("FONT_SIZE", "16"))
         self._orig.setFont(QFont(self.FONT_FAMILY, fs, QFont.Weight.Bold))
         self._trans.setFont(QFont(self.FONT_FAMILY, max(10, fs - 3)))
         self._hide_delay_ms = int(env.get("SUBTITLE_DURATION", "5000"))
+        self._position = env.get("SUBTITLE_POSITION", "bottom")
+        self._screen_index = int(env.get("SUBTITLE_SCREEN", "0"))
+        self._apply_position()
 
 
 class SubtitleTray:
-    def __init__(self, app, pipeline_control=None, overlay=None):
+    def __init__(self, app: QApplication, pipeline_control: "Optional[SubtitlePipeline]" = None, overlay: "Optional[SubtitleOverlay]" = None):
         self.app = app
         self.pipeline = pipeline_control
         self.overlay = overlay
@@ -243,7 +265,7 @@ class SubtitleTray:
         return QIcon(pm)
 
     def _toggle(self):
-        if self.pipeline and getattr(self.pipeline, "_paused", False):
+        if self.pipeline and self.pipeline.is_paused:
             self.pipeline.resume()
             self._ta.setText("暂停")
         elif self.pipeline:
