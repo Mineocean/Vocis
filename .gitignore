@@ -21,3 +21,6 @@ venv/
 # 系统
 Thumbs.db
 .DS_Store
+
+# 会话记录
+session_*.json
