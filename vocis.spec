@@ -20,7 +20,6 @@ a = Analysis(
     datas=[
         (".env.example", "."),
         ("assets", "assets"),
-        ("assets/style.qss", "assets"),
     ],
     hiddenimports=[
         "sounddevice",

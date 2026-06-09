@@ -21,15 +21,18 @@ jobs:
       - name: Install dependencies
         run: |
           pip install pyinstaller
-          pip install sounddevice numpy webrtcvad httpx python-dotenv pyside6 pynput comtypes faster-whisper torch
+          pip install sounddevice numpy webrtcvad httpx python-dotenv pyside6 pynput comtypes
 
       - name: Build with PyInstaller
         run: |
           pyinstaller vocis.spec
+          if (Test-Path dist\Vocis) { echo "Build OK" } else { echo "Build FAILED"; exit 1 }
+
+      - name: List build output
+        run: Get-ChildItem dist\Vocis -Recurse | Select-Object FullName, Length
 
       - name: Create ZIP archive
-        run: |
-          Compress-Archive -Path dist\Vocis\* -DestinationPath Vocis.zip
+        run: Compress-Archive -Path dist\Vocis -DestinationPath Vocis.zip
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -41,8 +44,6 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v1
         with:
-          files: |
-            Vocis.zip
-            dist/Vocis/Vocis.exe
+          files: Vocis.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
