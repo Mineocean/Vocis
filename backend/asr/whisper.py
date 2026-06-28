@@ -93,7 +93,7 @@ class WhisperASR(ASREngine):
             )
             text = " ".join(seg.text.strip() for seg in segments)
             if text:
-                logger.info("Whisper ASR: %s", text)
+                logger.debug("Whisper ASR: %s", text)
                 return text
             return None
         except Exception as e:
