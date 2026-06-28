@@ -16,10 +16,9 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QStackedWidget,
     QWidget,
-    QMessageBox,
 )
 
-from backend.config import read_env_file, write_env_file, env_path
+from backend.config import read_env_file, write_env_file
 
 
 class SetupWizard(QDialog):

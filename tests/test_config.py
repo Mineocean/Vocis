@@ -1,9 +1,5 @@
 """Tests for configuration loading."""
 
-import os
-from unittest.mock import patch
-from pathlib import Path
-
 from backend.config import read_env_file, write_env_file
 
 
