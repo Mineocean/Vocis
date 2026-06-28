@@ -76,7 +76,8 @@ class WhisperASR(ASREngine):
             return None
 
         self._load_model()
-        assert self._model is not None, "Whisper model failed to load"
+        if self._model is None:
+            raise RuntimeError("Whisper model failed to load")
 
         audio_np = np.frombuffer(audio_pcm, dtype=np.int16).astype(np.float32) / 32768.0
 
