@@ -10,7 +10,7 @@ DeepSeek 翻译客户端 + 翻译缓存。
 import asyncio
 import json
 import logging
-from typing import AsyncGenerator, Generator, Optional
+from typing import AsyncGenerator, Generator, Optional, cast
 
 import httpx
 
@@ -41,12 +41,14 @@ class DeepSeekTranslator:
         if self._closed:
             raise RuntimeError("DeepSeekTranslator is closed")
         if self._client is None:
-            self._client = create_http_client(
-                base_url=self.base_url,
-                api_key=self.api_key,
-                async_client=True,
+            self._client = cast(
+                httpx.AsyncClient,
+                create_http_client(
+                    base_url=self.base_url,
+                    api_key=self.api_key,
+                    async_client=True,
+                ),
             )
-        assert isinstance(self._client, httpx.AsyncClient)
         return self._client
 
     def translate(self, text: str) -> Optional[str]:
