@@ -46,6 +46,7 @@ class DeepSeekTranslator:
                 api_key=self.api_key,
                 async_client=True,
             )
+        assert isinstance(self._client, httpx.AsyncClient)
         return self._client
 
     def translate(self, text: str) -> Optional[str]:

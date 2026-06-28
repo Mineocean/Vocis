@@ -8,7 +8,7 @@
 import threading
 import queue
 import logging
-from typing import Optional
+from typing import Any, Optional
 
 import numpy as np
 import sounddevice as sd
@@ -32,7 +32,7 @@ class AudioCapture:
         self._actual_sr = cfg.sample_rate
         self._wasapi_idx: Optional[int] = None
         self._use_wasapi = False
-        self._wasapi = None
+        self._wasapi: Optional[Any] = None
 
     def _get_wasapi_hostapi(self) -> int:
         """获取 WASAPI hostapi 索引（缓存）"""
