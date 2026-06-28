@@ -86,7 +86,6 @@ class DeepSeekTranslator:
             "extra_body": {"thinking": {"type": "disabled"}},
         }
 
-        last_err = None
         for attempt in range(3):
             try:
                 resp = await self.client.post("/chat/completions", json=body)
