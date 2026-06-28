@@ -1,0 +1,236 @@
+"""
+字幕叠加层组件 —— 可拖拽 / 可调整大小的悬浮字幕窗口。
+
+职责：
+  - 半透明黑色圆角背景条
+  - 鼠标拖拽移动位置
+  - 右下角拖拽调整大小
+  - 始终置顶
+  - 显示原文 + 译文
+"""
+
+import logging
+from typing import Optional
+
+from PySide6.QtCore import Qt, QTimer, QPoint, QSize, Signal
+from PySide6.QtGui import QFont, QPainter, QColor, QPen
+from PySide6.QtWidgets import (
+    QApplication, QLabel, QVBoxLayout, QWidget,
+)
+
+from backend.config import get_config
+
+logger = logging.getLogger(__name__)
+
+HANDLE = 14
+
+
+class SubtitleWidget(QWidget):
+    """可拖拽移动 + 右下角调整大小的字幕叠加层"""
+
+    FONT_FAMILY = "Microsoft YaHei, Segoe UI, sans-serif"
+
+    # 跨线程安全信号
+    subtitle_signal = Signal(str, str)
+    _stream_signal = Signal(str, str, bool)  # original, translation_chunk, is_final
+
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Vocis")
+        self._dragging = False
+        self._resizing = False
+        self._drag_start = QPoint()
+        self._resize_start = QSize()
+        self._hide_delay_ms = 5000
+        self._position = "bottom"  # bottom / center / top
+        self._screen_index = 0
+        self._opacity = 0.9
+
+        self.setWindowFlags(
+            Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.WindowStaysOnTopHint
+            | Qt.WindowType.Tool
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        self.setMouseTracking(True)
+        self.resize(520, 80)
+
+        self._apply_position()
+
+        # ── 内容容器 ──
+        self._content = QWidget(self)
+        self._content.setStyleSheet(
+            "background-color: rgba(24, 24, 27, 0.85); border-radius: 8px;"
+        )
+        self._content.setMouseTracking(True)
+
+        lay = QVBoxLayout(self._content)
+        lay.setContentsMargins(16, 8, 16 + HANDLE, 8)
+        lay.setSpacing(1)
+
+        self._orig = QLabel("")
+        self._orig.setFont(QFont(self.FONT_FAMILY, 16, QFont.Weight.Bold))
+        self._orig.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        self._orig.setStyleSheet("color: #fafaf9; background: transparent;")
+        self._orig.setWordWrap(True)
+        self._orig.hide()
+
+        self._trans = QLabel("")
+        self._trans.setFont(QFont(self.FONT_FAMILY, 13))
+        self._trans.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        self._trans.setStyleSheet("color: #d4d4d8; background: transparent;")
+        self._trans.setWordWrap(True)
+        self._trans.hide()
+
+        lay.addWidget(self._orig)
+        lay.addWidget(self._trans)
+
+        self._hide_timer = QTimer()
+        self._hide_timer.setSingleShot(True)
+        self._hide_timer.timeout.connect(self._fade_out)
+
+        # 连接跨线程信号
+        self.subtitle_signal.connect(self.show_subtitle)
+        self._stream_signal.connect(self._update_stream_subtitle)
+
+    def _get_target_screen(self):
+        """获取目标屏幕"""
+        screens = QApplication.screens()
+        if 0 <= self._screen_index < len(screens):
+            return screens[self._screen_index]
+        return QApplication.primaryScreen()
+
+    def _apply_position(self):
+        """根据配置设置字幕位置"""
+        screen = self._get_target_screen()
+        if not screen:
+            return
+        g = screen.availableGeometry()
+        w, h = self.width(), self.height()
+        x = g.center().x() - w // 2
+
+        if self._position == "top":
+            y = g.top() + 40
+        elif self._position == "center":
+            y = g.center().y() - h // 2
+        else:  # bottom
+            y = g.bottom() - h - 40
+
+        self.move(x, y)
+
+    def set_opacity(self, opacity: float):
+        """Set subtitle overlay opacity (0.0 to 1.0)."""
+        self._opacity = max(0.1, min(1.0, opacity))
+        self._content.setStyleSheet(
+            f"background-color: rgba(24, 24, 27, {self._opacity}); border-radius: 8px;"
+        )
+
+    # ── 布局 ──────────────────────────────────────────
+
+    def resizeEvent(self, event):
+        self._content.resize(self.width(), self.height())
+        super().resizeEvent(event)
+
+    # ── 鼠标：拖拽 + resize ───────────────────────────
+
+    def _in_handle(self, pos) -> bool:
+        return (
+            self.width() - HANDLE <= pos.x() <= self.width()
+            and self.height() - HANDLE <= pos.y() <= self.height()
+        )
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            if self._in_handle(event.position()):
+                self._resizing = True
+                self._drag_start = event.globalPosition().toPoint()
+                self._resize_start = self.size()
+                self.setCursor(Qt.CursorShape.SizeFDiagCursor)
+            else:
+                self._dragging = True
+                self._drag_start = (
+                    event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+                )
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self._dragging:
+            p = event.globalPosition().toPoint() - self._drag_start
+            self.move(p)
+        elif self._resizing:
+            d = event.globalPosition().toPoint() - self._drag_start
+            nw = max(200, self._resize_start.width() + d.x())
+            nh = max(50, self._resize_start.height() + d.y())
+            self.resize(nw, nh)
+        elif self._in_handle(event.position()):
+            self.setCursor(Qt.CursorShape.SizeFDiagCursor)
+        else:
+            self.setCursor(Qt.CursorShape.OpenHandCursor)
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        self._dragging = False
+        self._resizing = False
+        self.setCursor(Qt.CursorShape.OpenHandCursor)
+        super().mouseReleaseEvent(event)
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(QPen(QColor(255, 255, 255, 80), 2))
+        bx, by = self.width() - 8, self.height() - 4
+        for i in range(3):
+            p.drawLine(bx - i * 5, by, bx, by - i * 5)
+        p.end()
+
+    # ── 显示 ──────────────────────────────────────────
+
+    def _update_display(self, original: str, translation: str):
+        """更新字幕显示并自适应大小"""
+        self._orig.setText(original)
+        self._trans.setText(translation)
+        self._orig.show()
+        self._trans.show()
+
+        # 自适应大小
+        self._orig.adjustSize()
+        self._trans.adjustSize()
+        tw = max(self._orig.width(), self._trans.width())
+        th = self._orig.height() + self._trans.height()
+        w = max(300, min(900, tw + 48 + HANDLE))
+        h = max(50, th + 24)
+        self.resize(w, h)
+
+        self._apply_position()
+        self.show()
+
+    def show_subtitle(self, original: str, translation: str):
+        self._update_display(original, translation)
+        if self._hide_delay_ms > 0:
+            self._hide_timer.start(self._hide_delay_ms)
+
+    def _fade_out(self):
+        if self._hide_delay_ms == 0:
+            return
+        self._orig.hide()
+        self._trans.hide()
+        self.hide()
+
+    def _update_stream_subtitle(self, original: str, translation_chunk: str, is_final: bool):
+        """流式更新字幕：逐步追加翻译内容"""
+        self._update_display(original, translation_chunk)
+        if is_final and self._hide_delay_ms > 0:
+            self._hide_timer.start(self._hide_delay_ms)
+
+    def apply_settings(self):
+        """从配置重新加载显示设置"""
+        cfg = get_config()
+        fs = int(cfg.display.font_size)
+        self._orig.setFont(QFont(self.FONT_FAMILY, fs, QFont.Weight.Bold))
+        self._trans.setFont(QFont(self.FONT_FAMILY, max(10, fs - 3)))
+        self._hide_delay_ms = int(cfg.display.subtitle_duration_ms)
+        self._position = cfg.display.subtitle_position
+        self._screen_index = int(cfg.display.subtitle_screen)
+        self._apply_position()
