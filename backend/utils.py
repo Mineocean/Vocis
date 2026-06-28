@@ -1,7 +1,7 @@
 """Backend utility functions — shared logic."""
 
 import logging
-from typing import Optional, Union
+from typing import Union
 
 import httpx
 

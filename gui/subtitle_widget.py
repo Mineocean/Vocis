@@ -10,7 +10,6 @@
 """
 
 import logging
-from typing import Optional
 
 from PySide6.QtCore import Qt, QTimer, QPoint, QSize, Signal
 from PySide6.QtGui import QFont, QPainter, QColor, QPen

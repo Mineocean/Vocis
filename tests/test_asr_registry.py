@@ -1,7 +1,7 @@
 """Tests for ASR plugin registry."""
 
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 from backend.asr.registry import _REGISTRY, create_asr, list_backends, register_asr
 from backend.asr.base import ASREngine

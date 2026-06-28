@@ -10,7 +10,6 @@ DeepSeek 翻译客户端 + 翻译缓存。
 import asyncio
 import json
 import logging
-import time
 from typing import AsyncGenerator, Generator, Optional
 
 import httpx
@@ -99,7 +98,6 @@ class DeepSeekTranslator:
                 logger.error("Translation HTTP %d: %s", e.response.status_code, e.response.text[:200])
                 return None
             except Exception as e:
-                last_err = e
                 if attempt < 2 and not self._closed:
                     logger.warning("Translation retry %d/3: %s", attempt + 1, e)
                     await asyncio.sleep(1.0 * (attempt + 1))

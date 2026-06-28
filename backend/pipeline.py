@@ -30,7 +30,6 @@ class SubtitlePipeline:
     """
 
     def __init__(self):
-        cfg = get_config()
         self.capture = AudioCapture()
         self.vad = VoiceActivityDetector()
         self.asr = create_asr()

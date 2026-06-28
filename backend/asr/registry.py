@@ -1,7 +1,7 @@
 """ASR backend registry and factory."""
 
 import logging
-from typing import Optional, Type
+from typing import Type
 
 from .base import ASREngine
 

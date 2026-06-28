@@ -1,7 +1,6 @@
 """Settings dialog — API, language, display, audio configuration."""
 
 import logging
-from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
@@ -10,21 +9,19 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QHBoxLayout,
     QGridLayout,
-    QFormLayout,
     QLineEdit,
     QComboBox,
     QSpinBox,
     QPushButton,
     QLabel,
-    QGroupBox,
     QRadioButton,
     QCheckBox,
     QListWidget,
     QListWidgetItem,
     QDialogButtonBox,
     QButtonGroup,
-    QSlider,
     QMessageBox,
+    QWidget,
 )
 import sounddevice as sd
 
