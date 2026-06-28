@@ -16,7 +16,7 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QFont, QAction, QIcon, QPainter, QColor
 from PySide6.QtWidgets import QApplication, QSystemTrayIcon, QMenu
 
-from backend.config import get_config
+
 
 if TYPE_CHECKING:
     from backend.pipeline import SubtitlePipeline
