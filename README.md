@@ -2,7 +2,7 @@
 
 Real-time speech recognition + AI translation subtitle overlay.
 
-[中文文档](README_zh.md)
+[中文文档](README_zh.md) | [License: MIT](LICENSE)
 
 ---
 
@@ -19,18 +19,15 @@ Vocis captures system audio (YouTube, meetings, games), recognizes speech in rea
 - **Subtitle overlay** — Transparent always-on-top window, draggable, configurable
 - **System tray** — Minimize to tray, hotkeys for pause/resume and language switching
 
+## Download
+
+Download the latest `Vocis.exe` from [GitHub Releases](https://github.com/Mineocean/Vocis/releases).
+
 ## Quick Start
 
-1. Install Python 3.11+
-2. Install dependencies:
-   ```bash
-   pip install -e .
-   ```
-3. Run Vocis:
-   ```bash
-   python main.py
-   ```
-4. First-run wizard guides API key configuration
+1. Download `Vocis.exe` from [Releases](https://github.com/Mineocean/Vocis/releases)
+2. Double-click to run — the first-run wizard will guide you through API key configuration
+3. System audio is captured automatically, subtitles appear as an overlay
 
 ## Hotkeys
 
@@ -41,7 +38,7 @@ Vocis captures system audio (YouTube, meetings, games), recognizes speech in rea
 
 ## Configuration
 
-Settings are stored in `.env` file. Key options:
+Settings are stored in `.env` file next to the executable. Key options:
 
 ```env
 MIMO_API_KEY=your-mimo-key
@@ -51,9 +48,10 @@ TARGET_LANGUAGE=中文
 ASR_BACKEND=mimo
 ```
 
-## Building
+## Building from Source
 
 ```bash
+pip install -e ".[dev]"
 pip install pyinstaller
 pyinstaller vocis.spec --noconfirm
 ```
@@ -66,3 +64,7 @@ Audio Capture → VAD → ASR → Translation → GUI
   sounddevice  Silero  MiMo/   DeepSeek   PySide6
   (WASAPI)    (ONNX)  Whisper   API      (Overlay)
 ```
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).
