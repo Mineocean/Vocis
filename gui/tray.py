@@ -45,6 +45,7 @@ class TrayManager:
         from gui.notification import set_tray
         set_tray(self.tray)
         self._status_action = None
+        self._current_lang = "auto"
         self._setup_hotkeys()
 
     def _setup_hotkeys(self):
@@ -139,12 +140,12 @@ class TrayManager:
         if not self.pipeline:
             return
         langs = ["auto", "zh", "en", "ja"]
-        cfg = get_config()
         try:
-            idx = langs.index(cfg.asr.language)
+            idx = langs.index(self._current_lang)
         except ValueError:
             idx = 0
         next_lang = langs[(idx + 1) % len(langs)]
+        self._current_lang = next_lang
         self.pipeline.set_language(next_lang)
         logger.info("Language switched to %s", next_lang)
 

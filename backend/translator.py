@@ -86,7 +86,7 @@ class DeepSeekTranslator:
             "messages": messages,
             "temperature": 0.1,
             "max_tokens": 1024,
-            "extra_body": {"thinking": {"type": "disabled"}},
+            "thinking": {"type": "disabled"},
         }
 
         for attempt in range(3):
@@ -169,7 +169,7 @@ class DeepSeekTranslator:
             "temperature": 0.1,
             "max_tokens": 1024,
             "stream": True,
-            "extra_body": {"thinking": {"type": "disabled"}},
+            "thinking": {"type": "disabled"},
         }
 
         full_translation = ""
