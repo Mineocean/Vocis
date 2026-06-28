@@ -89,6 +89,25 @@ def main():
 
     logger.info("Vocis started")
 
+    # Check for updates in background
+    from backend.updater import check_update_async
+    from gui.notification import notify_info
+
+    def _on_update(latest: str | None):
+        if latest:
+            notify_info(
+                f"New version {latest} available",
+                f"Download: https://github.com/Mineocean/Vocis/releases/tag/{latest}",
+            )
+            logger.info("Update available: %s", latest)
+
+    try:
+        from importlib.metadata import version as pkg_version
+        current_ver = pkg_version("vocis")
+    except Exception:
+        current_ver = "0.2.1"
+    check_update_async(current_ver, _on_update)
+
     # Keep event loop alive
     timer = QTimer()
     timer.start(500)
