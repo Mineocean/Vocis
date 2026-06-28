@@ -94,7 +94,11 @@ class DeepSeekTranslator:
                 resp = await self.client.post("/chat/completions", json=body)
                 resp.raise_for_status()
                 data = resp.json()
-                translation = data["choices"][0]["message"]["content"].strip()
+                content = (data.get("choices") or [{}])[0].get("message", {}).get("content")
+                if not content:
+                    logger.warning("API returned empty content: %s", str(data)[:200])
+                    return None
+                translation = content.strip()
                 break
             except httpx.HTTPStatusError as e:
                 logger.error("Translation HTTP %d: %s", e.response.status_code, e.response.text[:200])
