@@ -1,5 +1,6 @@
 """MiMo-V2.5-ASR cloud backend."""
 
+import asyncio
 import base64
 import io
 import logging
@@ -88,7 +89,7 @@ class MiMoASR(ASREngine):
             data = resp.json()
             text = data.get("choices", [{}])[0].get("message", {}).get("content", "")
             if text:
-                logger.info("MiMo ASR: %s", text)
+                logger.debug("MiMo ASR: %s", text)
                 return text.strip()
             logger.warning("MiMo ASR returned empty text")
             return None
@@ -101,9 +102,8 @@ class MiMoASR(ASREngine):
 
     def transcribe(self, audio_pcm: bytes) -> Optional[str]:
         """Sync fallback - runs async in new event loop."""
-        import asyncio
         try:
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             if loop.is_running():
                 logger.warning("Sync transcribe called in async context, use transcribe_async instead")
                 return None
@@ -112,13 +112,10 @@ class MiMoASR(ASREngine):
             return asyncio.run(self.transcribe_async(audio_pcm))
 
     def close(self):
-        self._closed = True
+        """Close the HTTP client."""
         if self._client:
-            import asyncio
             try:
-                loop = asyncio.get_event_loop()
-                if not loop.is_running():
-                    loop.run_until_complete(self._client.aclose())
+                asyncio.run(self._client.aclose())
             except RuntimeError:
                 pass
             self._client = None

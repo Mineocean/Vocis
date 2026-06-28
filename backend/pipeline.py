@@ -2,8 +2,7 @@
 Main pipeline — Audio capture → VAD → ASR → Translation → GUI.
 
 Async architecture:
-  - Audio feeder coroutine reads audio from capture device
-  - VAD processor coroutine splits audio into speech segments
+  - Audio feeder coroutine reads audio and runs VAD inline
   - ASR worker coroutine transcribes speech to text
   - Translate worker coroutine translates text and emits subtitles
 """
@@ -26,7 +25,7 @@ class SubtitlePipeline:
     """
     Async subtitle pipeline.
 
-    Coroutines: audio_feeder → vad_processor → asr_worker → translate_worker
+    Coroutines: audio_feeder → asr_worker → translate_worker
     """
 
     def __init__(self):
@@ -37,8 +36,8 @@ class SubtitlePipeline:
 
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._loop_thread: Optional[threading.Thread] = None
-        self._running = asyncio.Event()
-        self._paused = asyncio.Event()
+        self._running = threading.Event()
+        self._paused = threading.Event()
         self._paused.set()  # Not paused initially
 
         self._asr_queue: asyncio.Queue[Optional[str]] = asyncio.Queue(maxsize=10)
@@ -92,11 +91,10 @@ class SubtitlePipeline:
 
         self._tasks = [
             asyncio.create_task(self._audio_feeder(), name="audio_feeder"),
-            asyncio.create_task(self._vad_processor(), name="vad_processor"),
             asyncio.create_task(self._asr_worker(), name="asr_worker"),
             asyncio.create_task(self._translate_worker(), name="translate_worker"),
         ]
-        logger.info("Async tasks started")
+        logger.debug("Async tasks started")
 
     def stop(self):
         """Stop the pipeline."""
@@ -107,23 +105,26 @@ class SubtitlePipeline:
         self._paused.set()  # Unblock any paused coroutines
 
         # Signal workers to stop
-        asyncio.run_coroutine_threadsafe(
-            self._asr_queue.put(None), self._loop
-        ).result(timeout=2.0)
-        asyncio.run_coroutine_threadsafe(
-            self._translate_queue.put(None), self._loop
-        ).result(timeout=2.0)
-
-        # Cancel tasks
-        for task in self._tasks:
-            self._loop.call_soon_threadsafe(task.cancel)
-
-        # Wait for tasks to finish
         try:
-            future = asyncio.run_coroutine_threadsafe(
-                asyncio.gather(*self._tasks, return_exceptions=True), self._loop
-            )
-            future.result(timeout=5.0)
+            asyncio.run_coroutine_threadsafe(
+                self._asr_queue.put(None), self._loop
+            ).result(timeout=2.0)
+            asyncio.run_coroutine_threadsafe(
+                self._translate_queue.put(None), self._loop
+            ).result(timeout=2.0)
+
+            # Cancel tasks
+            for task in self._tasks:
+                self._loop.call_soon_threadsafe(task.cancel)
+
+            # Wait for tasks to finish
+            try:
+                future = asyncio.run_coroutine_threadsafe(
+                    asyncio.gather(*self._tasks, return_exceptions=True), self._loop
+                )
+                future.result(timeout=5.0)
+            except Exception:
+                pass
         except Exception:
             pass
 
@@ -164,11 +165,11 @@ class SubtitlePipeline:
 
     async def _audio_feeder(self):
         """Read audio from capture device and feed to VAD processor."""
-        logger.info("Audio feeder started")
+        logger.debug("Audio feeder started")
         while self._running.is_set():
-            await self._paused.wait()
+            await asyncio.to_thread(self._paused.wait)
             try:
-                chunk = await asyncio.get_event_loop().run_in_executor(
+                chunk = await asyncio.get_running_loop().run_in_executor(
                     None, lambda: self.capture.read(timeout=0.5)
                 )
                 if chunk is None:
@@ -185,24 +186,18 @@ class SubtitlePipeline:
             except Exception:
                 logger.exception("Audio feeder error")
                 await asyncio.sleep(0.5)
-        logger.info("Audio feeder stopped")
-
-    async def _vad_processor(self):
-        """Placeholder — VAD is done inline in audio_feeder for simplicity."""
-        # This coroutine exists for potential future separation
-        while self._running.is_set():
-            await asyncio.sleep(1.0)
+        logger.debug("Audio feeder stopped")
 
     async def _asr_worker(self):
         """Transcribe speech segments to text."""
-        logger.info("ASR worker started")
+        logger.debug("ASR worker started")
         while self._running.is_set():
             try:
                 segment = await asyncio.wait_for(self._asr_queue.get(), timeout=1.0)
                 if segment is None:
                     break
 
-                await self._paused.wait()
+                await asyncio.to_thread(self._paused.wait)
 
                 text = await self.asr.transcribe_async(segment)
                 if not text:
@@ -229,12 +224,15 @@ class SubtitlePipeline:
                 except asyncio.QueueFull:
                     pass
 
-        self._translate_queue.put_nowait(None)
-        logger.info("ASR worker stopped")
+        try:
+            self._translate_queue.put_nowait(None)
+        except asyncio.QueueFull:
+            pass
+        logger.debug("ASR worker stopped")
 
     async def _translate_worker(self):
         """Translate text and emit subtitles."""
-        logger.info("Translate worker started")
+        logger.debug("Translate worker started")
         while self._running.is_set():
             try:
                 item = await asyncio.wait_for(self._translate_queue.get(), timeout=1.0)
@@ -243,7 +241,7 @@ class SubtitlePipeline:
 
                 task_type, text = item
 
-                await self._paused.wait()
+                await asyncio.to_thread(self._paused.wait)
 
                 cfg = get_config()
                 use_stream = cfg.display.stream_translation
@@ -260,7 +258,7 @@ class SubtitlePipeline:
                 logger.exception("Translate worker error")
                 await asyncio.sleep(0.5)
 
-        logger.info("Translate worker stopped")
+        logger.debug("Translate worker stopped")
 
     async def _stream_translate(self, text: str):
         """Streaming translation — emit subtitle chunks."""
@@ -289,7 +287,7 @@ class SubtitlePipeline:
 
     def _emit_subtitle(self, original: str, translation: str):
         """Emit subtitle event to GUI (thread-safe via Qt Signal)."""
-        logger.info("Subtitle: [orig] %s  [trans] %s", original, translation)
+        logger.debug("Subtitle: [orig] %s  [trans] %s", original, translation)
         if self._on_subtitle:
             try:
                 self._on_subtitle(original, translation)

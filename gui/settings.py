@@ -305,7 +305,8 @@ class SettingsDialog(QDialog):
 
         item = self._device_list.currentItem()
         if item:
-            env["AUDIO_DEVICE"] = str(item.data(Qt.ItemDataRole.UserRole) or "auto")
+            dev_id = item.data(Qt.ItemDataRole.UserRole)
+            env["AUDIO_DEVICE"] = str(dev_id) if dev_id is not None else "auto"
 
         backends = ["mimo", "whisper", "mock"]
         env["ASR_BACKEND"] = backends[self._asr_backend.currentIndex()]

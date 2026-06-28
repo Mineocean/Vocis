@@ -61,7 +61,7 @@ class DeepSeekTranslator:
         if not text or not text.strip():
             return None
         try:
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             if loop.is_running():
                 logger.warning("translate() called inside running event loop; use translate_async() instead")
                 return None
@@ -86,7 +86,7 @@ class DeepSeekTranslator:
             "messages": messages,
             "temperature": 0.1,
             "max_tokens": 1024,
-            "extra_body": {"thinking": {"type": "disabled"}},
+            "thinking": {"type": "disabled"},
         }
 
         for attempt in range(3):
@@ -94,7 +94,11 @@ class DeepSeekTranslator:
                 resp = await self.client.post("/chat/completions", json=body)
                 resp.raise_for_status()
                 data = resp.json()
-                translation = data["choices"][0]["message"]["content"].strip()
+                content = (data.get("choices") or [{}])[0].get("message", {}).get("content")
+                if not content:
+                    logger.warning("API returned empty content: %s", str(data)[:200])
+                    return None
+                translation = content.strip()
                 break
             except httpx.HTTPStatusError as e:
                 logger.error("Translation HTTP %d: %s", e.response.status_code, e.response.text[:200])
@@ -111,7 +115,7 @@ class DeepSeekTranslator:
         self.cache.put(text, translation)
         self._prev_original = text
         self._prev_translation = translation
-        logger.info("Translation: %s → %s", text[:40], translation[:40])
+        logger.debug("Translation: %s → %s", text[:40], translation[:40])
         return translation
 
     def translate_stream(self, text: str) -> Generator[str, None, None]:
@@ -126,7 +130,7 @@ class DeepSeekTranslator:
 
         # Run the async generator in an event loop and yield results
         try:
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             if loop.is_running():
                 logger.warning("translate_stream() called inside running event loop; use translate_stream_async() instead")
                 return
@@ -165,7 +169,7 @@ class DeepSeekTranslator:
             "temperature": 0.1,
             "max_tokens": 1024,
             "stream": True,
-            "extra_body": {"thinking": {"type": "disabled"}},
+            "thinking": {"type": "disabled"},
         }
 
         full_translation = ""
@@ -198,7 +202,7 @@ class DeepSeekTranslator:
             self.cache.put(text, full_translation)
             self._prev_original = text
             self._prev_translation = full_translation
-            logger.info("Stream translation done: %s → %s", text[:40], full_translation[:40])
+            logger.debug("Stream translation done: %s → %s", text[:40], full_translation[:40])
 
     def _build_messages(self, text: str) -> list[dict]:
         """构造翻译请求的消息列表"""
@@ -228,13 +232,11 @@ class DeepSeekTranslator:
         self._prev_translation = None
 
     def close(self):
+        """Close the HTTP client."""
         self._closed = True
         if self._client:
-            import asyncio
             try:
-                loop = asyncio.get_event_loop()
-                if not loop.is_running():
-                    loop.run_until_complete(self._client.aclose())
+                asyncio.run(self._client.aclose())
             except RuntimeError:
                 pass
             self._client = None

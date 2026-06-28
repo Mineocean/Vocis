@@ -12,11 +12,11 @@ import logging
 from pathlib import Path
 from typing import Optional, TYPE_CHECKING
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QFont, QAction, QIcon, QPainter, QColor
 from PySide6.QtWidgets import QApplication, QSystemTrayIcon, QMenu
 
-from backend.config import get_config
+
 
 if TYPE_CHECKING:
     from backend.pipeline import SubtitlePipeline
@@ -45,6 +45,7 @@ class TrayManager:
         from gui.notification import set_tray
         set_tray(self.tray)
         self._status_action = None
+        self._current_lang = "auto"
         self._setup_hotkeys()
 
     def _setup_hotkeys(self):
@@ -56,24 +57,10 @@ class TrayManager:
                 from pynput import keyboard
 
                 def toggle():
-                    if not self.pipeline:
-                        return
-                    if self.pipeline.is_paused:
-                        self.pipeline.resume()
-                    else:
-                        self.pipeline.pause()
+                    QTimer.singleShot(0, self.tray, self._do_toggle)
 
                 def switch():
-                    if not self.pipeline:
-                        return
-                    langs = ["auto", "zh", "en", "ja"]
-                    cfg = get_config()
-                    try:
-                        idx = langs.index(cfg.asr.language)
-                    except ValueError:
-                        idx = 0
-                    next_lang = langs[(idx + 1) % len(langs)]
-                    self.pipeline.set_language(next_lang)
+                    QTimer.singleShot(0, self.tray, self._do_switch)
 
                 with keyboard.GlobalHotKeys({
                     "<ctrl>+<shift>+s": toggle,
@@ -136,6 +123,31 @@ class TrayManager:
         elif self.pipeline:
             self.pipeline.pause()
             self._toggle_action.setText("继续")
+
+    def _do_toggle(self):
+        """Toggle pause/resume on the Qt main thread (called via QTimer.singleShot)."""
+        if not self.pipeline:
+            return
+        if self.pipeline.is_paused:
+            self.pipeline.resume()
+            self._toggle_action.setText("暂停")
+        else:
+            self.pipeline.pause()
+            self._toggle_action.setText("继续")
+
+    def _do_switch(self):
+        """Cycle language on the Qt main thread (called via QTimer.singleShot)."""
+        if not self.pipeline:
+            return
+        langs = ["auto", "zh", "en", "ja"]
+        try:
+            idx = langs.index(self._current_lang)
+        except ValueError:
+            idx = 0
+        next_lang = langs[(idx + 1) % len(langs)]
+        self._current_lang = next_lang
+        self.pipeline.set_language(next_lang)
+        logger.info("Language switched to %s", next_lang)
 
     def _open_settings(self):
         from gui.settings import SettingsDialog

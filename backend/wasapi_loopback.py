@@ -245,7 +245,7 @@ class WasapiLoopbackCapture:
         except Exception as e:
             logger.exception("WASAPI 捕获异常: %s", e)
         finally:
-            self._running = False
+            self._running.clear()
             self.queue.put(None)  # 通知上层停止
             ole32.CoUninitialize()
 

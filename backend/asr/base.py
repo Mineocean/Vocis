@@ -1,5 +1,6 @@
 """ASR engine abstract base class."""
 
+import asyncio
 from abc import ABC, abstractmethod
 from typing import Optional
 
@@ -13,8 +14,8 @@ class ASREngine(ABC):
         ...
 
     async def transcribe_async(self, audio_pcm: bytes) -> Optional[str]:
-        """Async version of transcribe. Default calls sync version."""
-        return self.transcribe(audio_pcm)
+        """Async version of transcribe. Runs sync version in thread pool."""
+        return await asyncio.to_thread(self.transcribe, audio_pcm)
 
     def set_language(self, language: str):
         """Set recognition language at runtime."""

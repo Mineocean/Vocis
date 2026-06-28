@@ -45,6 +45,7 @@ a = Analysis(
         "backend.translator",
         "backend.pipeline",
         "backend.wasapi_loopback",
+        "backend.utils",
         "gui",
         "gui.overlay",
         "gui.subtitle_widget",
