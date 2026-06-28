@@ -42,6 +42,8 @@ class TrayManager:
         self.tray.setIcon(self._load_icon())
         self._build_menu()
         self.tray.show()
+        from gui.notification import set_tray
+        set_tray(self.tray)
         self._status_action = None
         self._setup_hotkeys()
 
