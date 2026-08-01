@@ -5,8 +5,9 @@ Vocis 图标生成脚本。
 需要 Pillow: pip install Pillow
 """
 
-from PIL import Image, ImageDraw
 import os
+
+from PIL import Image, ImageDraw
 
 
 def draw_icon(size: int) -> Image.Image:
@@ -74,11 +75,11 @@ def main():
     # 单尺寸 ICO（Windows 兼容）
     img256 = draw_icon(256)
     img256.save("assets/vocis.ico", format="ICO", sizes=[(256, 256)])
-    print(f"  assets/vocis.ico  (256x256)")
+    print("  assets/vocis.ico  (256x256)")
 
     # 复制 256 PNG 作为主文件
     img256.save("assets/vocis.png")
-    print(f"  assets/vocis.png  (256x256)")
+    print("  assets/vocis.png  (256x256)")
 
     print(f"\n共生成 {len(sizes) + 2} 个图标文件到 assets/ 目录")
 

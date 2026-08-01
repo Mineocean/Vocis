@@ -5,10 +5,10 @@
 捕获系统音频（Loopback / Stereo Mix），不回退到麦克风。
 """
 
-import threading
-import queue
 import logging
-from typing import Any, Optional
+import queue
+import threading
+from typing import Any
 
 import numpy as np
 import sounddevice as sd
@@ -21,18 +21,19 @@ logger = logging.getLogger(__name__)
 class AudioCapture:
     """系统音频采集器（仅 WASAPI hostapi，支持 Loopback / Stereo Mix）"""
 
-    def __init__(self, device_id: Optional[int] = None):
+    def __init__(self, device_id: int | None = None):
         cfg = get_config()
         self.sample_rate = cfg.sample_rate
         self.block_size = int(self.sample_rate * 0.1)
-        self.queue: queue.Queue[Optional[np.ndarray]] = queue.Queue()
-        self._stream: Optional[sd.InputStream] = None
+        self.queue: queue.Queue[np.ndarray | None] = queue.Queue(maxsize=50)
+        self._stream: sd.InputStream | None = None
         self._running = threading.Event()
+        self._enabled = True
         self._device_id = device_id
         self._actual_sr = cfg.sample_rate
-        self._wasapi_idx: Optional[int] = None
+        self._wasapi_idx: int | None = None
         self._use_wasapi = False
-        self._wasapi: Optional[Any] = None
+        self._wasapi: Any | None = None
 
     def _get_wasapi_hostapi(self) -> int:
         """获取 WASAPI hostapi 索引（缓存）"""
@@ -45,7 +46,7 @@ class AudioCapture:
                 self._wasapi_idx = -1
         return self._wasapi_idx
 
-    def _resolve_device(self) -> Optional[int]:
+    def _resolve_device(self) -> int | None:
         """解析 WASAPI 下的系统音频设备（Loopback / Stereo Mix）"""
         cfg = get_config()
         wasapi = self._get_wasapi_hostapi()
@@ -82,7 +83,7 @@ class AudioCapture:
         # 3. 自动检测 WASAPI 下的 Loopback / Stereo Mix
         return self._find_system_audio(wasapi)
 
-    def _find_system_audio(self, wasapi: int) -> Optional[int]:
+    def _find_system_audio(self, wasapi: int) -> int | None:
         """
         在 WASAPI hostapi 下搜索系统音频设备。
         关键字：loopback / stereo mix / 立体声混音 / 立体声
@@ -132,18 +133,29 @@ class AudioCapture:
             return None
 
     def _audio_callback(self, indata: np.ndarray, frames: int, time_info, status):
+        if not self._enabled:
+            return
         if status:
             logger.warning("Audio callback status: %s", status)
         if indata.ndim > 1:
             indata = indata.mean(axis=1)
         if self._actual_sr != self.sample_rate:
-            from scipy.signal import resample_poly
             from math import gcd
+
+            from scipy.signal import resample_poly
             g = gcd(int(self._actual_sr), self.sample_rate)
             up = self.sample_rate // g
             down = int(self._actual_sr) // g
             indata = resample_poly(indata, up, down).astype(np.float32)
-        self.queue.put(indata.copy())
+        try:
+            self.queue.put_nowait(indata.copy())
+        except queue.Full:
+            # 队列满：丢弃最旧的数据，保证实时性并防止内存膨胀
+            try:
+                self.queue.get_nowait()
+            except queue.Empty:
+                pass
+            self.queue.put_nowait(indata.copy())
 
     def start(self) -> bool:
         """启动音频捕获（sounddevice 优先，失败则降级到 WASAPI Loopback）"""
@@ -203,15 +215,14 @@ class AudioCapture:
                 "  2. 确保已安装 comtypes: pip install comtypes"
             )
             return False
-        except Exception as e:
-            logger.exception("WASAPI Loopback 异常: %s", e)
+        except Exception:
+            logger.exception("WASAPI Loopback 异常")
             return False
 
     def stop(self):
         self._running.clear()
-        if hasattr(self, "_use_wasapi") and self._use_wasapi:
-            if hasattr(self, "_wasapi"):
-                self._wasapi.stop()
+        if self._use_wasapi and self._wasapi:
+            self._wasapi.stop()
         if self._stream:
             try:
                 self._stream.stop()
@@ -222,7 +233,9 @@ class AudioCapture:
         self.queue.put(None)
         logger.info("音频采集已停止")
 
-    def read(self, timeout: float = 0.5) -> Optional[np.ndarray]:
+    def read(self, timeout: float = 0.5) -> np.ndarray | None:
+        if not self._enabled:
+            return np.array([], dtype=np.float32)
         if hasattr(self, "_use_wasapi") and self._use_wasapi:
             return self._wasapi.read(timeout=timeout)
         try:
@@ -233,8 +246,20 @@ class AudioCapture:
         except queue.Empty:
             return np.array([], dtype=np.float32)
 
-    def read_nonblocking(self) -> Optional[np.ndarray]:
-        try:
-            return self.queue.get_nowait()
-        except queue.Empty:
-            return None
+    def set_enabled(self, enabled: bool):
+        """启用/禁用采集。禁用时丢弃音频数据并清空队列，避免暂停期间内存膨胀。"""
+        self._enabled = enabled
+        if enabled:
+            self._clear_queue()
+            if self._use_wasapi and self._wasapi is not None:
+                self._wasapi.flush()
+        else:
+            self._clear_queue()
+        logger.debug("Audio capture enabled=%s", enabled)
+
+    def _clear_queue(self):
+        while True:
+            try:
+                self.queue.get_nowait()
+            except queue.Empty:
+                break

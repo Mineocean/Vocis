@@ -2,7 +2,6 @@
 
 import logging
 import time
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -15,7 +14,7 @@ class TranslationCache:
         self._window = window_seconds
         self._max_size = max_size
 
-    def get(self, text: str) -> Optional[str]:
+    def get(self, text: str) -> str | None:
         """Return cached translation if not expired."""
         key = text.strip()
         entry = self._cache.get(key)

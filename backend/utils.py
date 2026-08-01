@@ -1,7 +1,6 @@
 """Backend utility functions — shared logic."""
 
 import logging
-from typing import Union
 
 import httpx
 
@@ -27,7 +26,7 @@ def create_http_client(
     auth_prefix: str = "Bearer ",
     timeout: float = 10.0,
     async_client: bool = False,
-) -> Union[httpx.Client, httpx.AsyncClient]:
+) -> httpx.Client | httpx.AsyncClient:
     """Create httpx client instance (sync or async)."""
     headers = {
         auth_header: f"{auth_prefix}{api_key}",

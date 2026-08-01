@@ -10,13 +10,14 @@ DeepSeek 翻译客户端 + 翻译缓存。
 import asyncio
 import json
 import logging
-from typing import AsyncGenerator, Generator, Optional, cast
+from collections.abc import AsyncGenerator
+from typing import cast
 
 import httpx
 
 from .cache import TranslationCache
 from .config import get_config
-from .utils import normalize_api_url, create_http_client
+from .utils import create_http_client, normalize_api_url
 
 logger = logging.getLogger(__name__)
 
@@ -31,9 +32,9 @@ class DeepSeekTranslator:
         self.model = cfg.translator.model
         self.target_language = cfg.translator.target_language
         self.cache = TranslationCache(cfg.cache_window_seconds)
-        self._prev_original: Optional[str] = None
-        self._prev_translation: Optional[str] = None
-        self._client: Optional[httpx.AsyncClient] = None
+        self._prev_original: str | None = None
+        self._prev_translation: str | None = None
+        self._client: httpx.AsyncClient | None = None
         self._closed = False
 
     @property
@@ -51,25 +52,7 @@ class DeepSeekTranslator:
             )
         return self._client
 
-    def translate(self, text: str) -> Optional[str]:
-        """
-        翻译文本（同步回退，调用 async 版本）。
-
-        :param text: 原文
-        :return: 译文，失败返回 None
-        """
-        if not text or not text.strip():
-            return None
-        try:
-            loop = asyncio.get_running_loop()
-            if loop.is_running():
-                logger.warning("translate() called inside running event loop; use translate_async() instead")
-                return None
-            return loop.run_until_complete(self.translate_async(text))
-        except RuntimeError:
-            return asyncio.run(self.translate_async(text))
-
-    async def translate_async(self, text: str) -> Optional[str]:
+    async def translate_async(self, text: str) -> str | None:
         """Async translate text."""
         if not text or not text.strip():
             return None
@@ -117,38 +100,6 @@ class DeepSeekTranslator:
         self._prev_translation = translation
         logger.debug("Translation: %s → %s", text[:40], translation[:40])
         return translation
-
-    def translate_stream(self, text: str) -> Generator[str, None, None]:
-        """
-        流式翻译（同步回退，调用 async 版本）。
-
-        :param text: 原文
-        :yield: 翻译片段
-        """
-        if not text or not text.strip():
-            return
-
-        # Run the async generator in an event loop and yield results
-        try:
-            loop = asyncio.get_running_loop()
-            if loop.is_running():
-                logger.warning("translate_stream() called inside running event loop; use translate_stream_async() instead")
-                return
-            gen = self.translate_stream_async(text)
-            while True:
-                try:
-                    chunk = loop.run_until_complete(gen.__anext__())
-                    yield chunk
-                except StopAsyncIteration:
-                    break
-        except RuntimeError:
-            gen = self.translate_stream_async(text)
-            while True:
-                try:
-                    chunk = asyncio.run(gen.__anext__())
-                    yield chunk
-                except StopAsyncIteration:
-                    break
 
     async def translate_stream_async(self, text: str) -> AsyncGenerator[str, None]:
         """Async streaming translation."""
@@ -221,7 +172,12 @@ class DeepSeekTranslator:
                 f"前一句译文：{self._prev_translation}"
             )
             messages.append({"role": "user", "content": context})
-            messages.append({"role": "assistant", "content": "好的，我已了解上下文。"})
+            ack = (
+                f"好的，我已了解上下文，将继续翻译为{self.target_language}。"
+                if self.target_language
+                else "好的，我已了解上下文。"
+            )
+            messages.append({"role": "assistant", "content": ack})
 
         messages.append({"role": "user", "content": text})
         return messages

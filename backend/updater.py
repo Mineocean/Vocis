@@ -2,7 +2,7 @@
 
 import logging
 import threading
-from typing import Callable, Optional
+from collections.abc import Callable
 
 import httpx
 
@@ -21,7 +21,7 @@ def _parse_version(tag: str) -> tuple[int, ...]:
         return ()
 
 
-def check_update(current_version: str) -> Optional[str]:
+def check_update(current_version: str) -> str | None:
     """Return newer tag name if available, else None."""
     try:
         resp = httpx.get(GITHUB_API, timeout=10, follow_redirects=True)
@@ -36,7 +36,7 @@ def check_update(current_version: str) -> Optional[str]:
 
 def check_update_async(
     current_version: str,
-    callback: Callable[[Optional[str]], None],
+    callback: Callable[[str | None], None],
 ):
     """Check for updates in a background thread, call callback(latest_tag)."""
 

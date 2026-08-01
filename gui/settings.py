@@ -1,31 +1,41 @@
 """Settings dialog — API, language, display, audio configuration."""
 
 import logging
+import threading
 
+import httpx
+import sounddevice as sd
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
-    QDialog,
-    QTabWidget,
-    QVBoxLayout,
-    QHBoxLayout,
-    QGridLayout,
-    QLineEdit,
-    QComboBox,
-    QSpinBox,
-    QPushButton,
-    QLabel,
-    QRadioButton,
+    QButtonGroup,
     QCheckBox,
+    QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
-    QDialogButtonBox,
-    QButtonGroup,
     QMessageBox,
+    QPushButton,
+    QRadioButton,
+    QSpinBox,
+    QTabWidget,
+    QVBoxLayout,
     QWidget,
 )
-import sounddevice as sd
 
-from backend.config import get_config, read_env_file, write_env_file, env_path, reload_config
+from backend.config import (
+    env_path,
+    get_config,
+    read_env_file,
+    reload_config,
+    write_env_file,
+)
+from backend.utils import normalize_api_url
+from gui.i18n import reload_language, tr
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +45,7 @@ class SettingsDialog(QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Vocis Settings")
+        self.setWindowTitle(tr("settings_title"))
         self.setMinimumWidth(520)
         self.setMinimumHeight(460)
         self._env = read_env_file()
@@ -44,39 +54,44 @@ class SettingsDialog(QDialog):
 
     def _build_ui(self):
         layout = QVBoxLayout(self)
-        tabs = QTabWidget()
+        self._tabs = QTabWidget()
 
-        tabs.addTab(self._build_api_tab(), "API")
-        tabs.addTab(self._build_lang_tab(), "Language")
-        tabs.addTab(self._build_display_tab(), "Display")
-        tabs.addTab(self._build_audio_tab(), "Audio")
+        self._tabs.addTab(self._build_api_tab(), tr("tab_api"))
+        self._tabs.addTab(self._build_lang_tab(), tr("tab_language"))
+        self._tabs.addTab(self._build_display_tab(), tr("tab_display"))
+        self._tabs.addTab(self._build_audio_tab(), tr("tab_audio"))
 
-        layout.addWidget(tabs)
+        layout.addWidget(self._tabs)
         layout.addWidget(self._build_buttons())
 
     def _build_api_tab(self) -> QWidget:
         tab = QWidget()
         grid = QGridLayout(tab)
 
-        grid.addWidget(QLabel("MiMo ASR Key:"), 0, 0)
+        grid.addWidget(QLabel(tr("mimo_key")), 0, 0)
         self._mimo_key = QLineEdit()
         self._mimo_key.setEchoMode(QLineEdit.EchoMode.Password)
-        self._mimo_key.setPlaceholderText("Enter MiMo API Key")
+        self._mimo_key.setPlaceholderText(tr("enter_mimo_key"))
         grid.addWidget(self._mimo_key, 0, 1)
 
-        self._mimo_test = QPushButton("Test")
+        self._mimo_test = QPushButton(tr("test"))
         self._mimo_test.clicked.connect(lambda: self._test_connection("mimo"))
         grid.addWidget(self._mimo_test, 0, 2)
 
-        grid.addWidget(QLabel("DeepSeek Key:"), 1, 0)
+        grid.addWidget(QLabel(tr("deepseek_key")), 1, 0)
         self._ds_key = QLineEdit()
         self._ds_key.setEchoMode(QLineEdit.EchoMode.Password)
-        self._ds_key.setPlaceholderText("Enter DeepSeek API Key")
+        self._ds_key.setPlaceholderText(tr("enter_ds_key"))
         grid.addWidget(self._ds_key, 1, 1)
 
-        self._ds_test = QPushButton("Test")
+        self._ds_test = QPushButton(tr("test"))
         self._ds_test.clicked.connect(lambda: self._test_connection("deepseek"))
         grid.addWidget(self._ds_test, 1, 2)
+
+        grid.addWidget(QLabel(tr("ui_language")), 2, 0)
+        self._ui_lang = QComboBox()
+        self._ui_lang.addItems([tr("ui_lang_auto"), tr("ui_lang_zh"), tr("ui_lang_en")])
+        grid.addWidget(self._ui_lang, 2, 1)
 
         return tab
 
@@ -84,12 +99,12 @@ class SettingsDialog(QDialog):
         tab = QWidget()
         grid = QGridLayout(tab)
 
-        grid.addWidget(QLabel("Source Language:"), 0, 0)
+        grid.addWidget(QLabel(tr("source_language")), 0, 0)
         self._lang_group = QButtonGroup(self)
-        self._radio_auto = QRadioButton("Auto")
-        self._radio_zh = QRadioButton("Chinese (zh)")
-        self._radio_en = QRadioButton("English (en)")
-        self._radio_ja = QRadioButton("Japanese (ja)")
+        self._radio_auto = QRadioButton(tr("auto"))
+        self._radio_zh = QRadioButton(tr("chinese_zh"))
+        self._radio_en = QRadioButton(tr("english_en"))
+        self._radio_ja = QRadioButton(tr("japanese_ja"))
         self._lang_group.addButton(self._radio_auto, 0)
         self._lang_group.addButton(self._radio_zh, 1)
         self._lang_group.addButton(self._radio_en, 2)
@@ -102,9 +117,9 @@ class SettingsDialog(QDialog):
         lang_layout.addWidget(self._radio_ja)
         grid.addLayout(lang_layout, 0, 1)
 
-        grid.addWidget(QLabel("Target Language:"), 1, 0)
+        grid.addWidget(QLabel(tr("target_language")), 1, 0)
         self._target_lang = QLineEdit()
-        self._target_lang.setPlaceholderText("中文 / English / 日本語")
+        self._target_lang.setPlaceholderText(tr("target_lang_placeholder"))
         grid.addWidget(self._target_lang, 1, 1)
 
         return tab
@@ -113,30 +128,30 @@ class SettingsDialog(QDialog):
         tab = QWidget()
         grid = QGridLayout(tab)
 
-        grid.addWidget(QLabel("Font Size:"), 0, 0)
+        grid.addWidget(QLabel(tr("font_size")), 0, 0)
         self._font_size = QSpinBox()
         self._font_size.setRange(10, 48)
         self._font_size.setValue(16)
         grid.addWidget(self._font_size, 0, 1)
 
-        grid.addWidget(QLabel("Position:"), 1, 0)
+        grid.addWidget(QLabel(tr("position")), 1, 0)
         self._position_combo = QComboBox()
         self._position_combo.addItems(["Bottom", "Center", "Top"])
         grid.addWidget(self._position_combo, 1, 1)
 
-        grid.addWidget(QLabel("Screen:"), 2, 0)
+        grid.addWidget(QLabel(tr("screen")), 2, 0)
         self._screen_combo = QComboBox()
-        self._screen_combo.addItem("Primary")
+        self._screen_combo.addItem(tr("screen_primary"))
         grid.addWidget(self._screen_combo, 2, 1)
 
-        grid.addWidget(QLabel("Subtitle Duration (ms):"), 3, 0)
+        grid.addWidget(QLabel(tr("subtitle_duration")), 3, 0)
         self._duration_spin = QSpinBox()
         self._duration_spin.setRange(0, 30000)
-        self._duration_spin.setSpecialValueText("Permanent")
+        self._duration_spin.setSpecialValueText(tr("permanent"))
         self._duration_spin.setSingleStep(1000)
         grid.addWidget(self._duration_spin, 3, 1)
 
-        self._check_stream = QCheckBox("Streaming translation (show as translating)")
+        self._check_stream = QCheckBox(tr("stream_translation"))
         self._check_stream.setChecked(True)
         grid.addWidget(self._check_stream, 4, 0, 1, 2)
 
@@ -146,7 +161,7 @@ class SettingsDialog(QDialog):
         tab = QWidget()
         grid = QGridLayout(tab)
 
-        grid.addWidget(QLabel("Audio Devices:"), 0, 0, 1, 2)
+        grid.addWidget(QLabel(tr("audio_devices")), 0, 0, 1, 2)
         self._device_list = QListWidget()
         self._device_list.setMaximumHeight(160)
         self._refresh_devices()
@@ -157,22 +172,22 @@ class SettingsDialog(QDialog):
         self._device_info.setWordWrap(True)
         grid.addWidget(self._device_info, 2, 0, 1, 2)
 
-        grid.addWidget(QLabel("ASR Backend:"), 3, 0)
+        grid.addWidget(QLabel(tr("asr_backend")), 3, 0)
         self._asr_backend = QComboBox()
         self._asr_backend.addItems(["mimo (cloud)", "whisper (local)", "mock (test)"])
         grid.addWidget(self._asr_backend, 3, 1)
 
-        grid.addWidget(QLabel("Whisper Model:"), 4, 0)
+        grid.addWidget(QLabel(tr("whisper_model")), 4, 0)
         self._whisper_model = QComboBox()
         self._whisper_model.addItems(["tiny (~40MB)", "base (~140MB)", "small (~460MB)"])
         grid.addWidget(self._whisper_model, 4, 1)
 
-        grid.addWidget(QLabel("Device:"), 5, 0)
+        grid.addWidget(QLabel(tr("device")), 5, 0)
         self._whisper_device = QComboBox()
         self._whisper_device.addItems(["cuda (GPU)", "cpu (CPU)", "auto"])
         grid.addWidget(self._whisper_device, 5, 1)
 
-        self._gpu_info = QLabel("Checking...")
+        self._gpu_info = QLabel(tr("gpu_checking"))
         self._gpu_info.setWordWrap(True)
         grid.addWidget(self._gpu_info, 6, 0, 1, 2)
         QTimer.singleShot(100, self._refresh_gpu_info)
@@ -191,34 +206,93 @@ class SettingsDialog(QDialog):
         return buttons
 
     def _test_connection(self, service: str):
-        """Test API connection."""
+        """Test API connection with a real HTTP request (async, non-blocking)."""
         if service == "mimo":
             key = self._mimo_key.text().strip()
             if not key:
-                QMessageBox.warning(self, "Test", "Please enter MiMo API Key first.")
+                QMessageBox.warning(self, tr("test_fail"), tr("test_enter_mimo_key"))
                 return
-            QMessageBox.information(self, "Test", "Key format looks valid. Save and restart to test.")
+            asr_cfg = get_config().asr
+            url = normalize_api_url(asr_cfg.base_url) + "/chat/completions"
+            headers = {"api-key": key, "Content-Type": "application/json"}
+            # MiMo 是纯 ASR 服务，只接受 input_audio 内容，文本 "ping" 会返回 400。
+            import base64
+            from backend.asr.mimo import pcm_to_wav
+            silence = b"\x00\x00" * 16000  # 1 秒 16bit 静音 PCM
+            data_url = f"data:audio/wav;base64,{base64.b64encode(pcm_to_wav(silence)).decode('ascii')}"
+            body: dict = {
+                "model": asr_cfg.model,
+                "messages": [
+                    {"role": "user", "content": [
+                        {"type": "input_audio", "input_audio": {"data": data_url}}
+                    ]}
+                ],
+                "max_tokens": 1,
+            }
         elif service == "deepseek":
             key = self._ds_key.text().strip()
             if not key:
-                QMessageBox.warning(self, "Test", "Please enter DeepSeek API Key first.")
+                QMessageBox.warning(self, tr("test_fail"), tr("test_enter_ds_key"))
                 return
-            QMessageBox.information(self, "Test", "Key format looks valid. Save and restart to test.")
+            tr_cfg = get_config().translator
+            url = normalize_api_url(tr_cfg.base_url) + "/chat/completions"
+            headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+            body = {
+                "model": tr_cfg.model,
+                "messages": [{"role": "user", "content": "ping"}],
+                "max_tokens": 8,
+            }
+        else:
+            return
+
+        button = self._mimo_test if service == "mimo" else self._ds_test
+        button.setEnabled(False)
+        button.setText(tr("test_progress"))
+
+        def _run():
+            ok, detail = False, ""
+            try:
+                with httpx.Client(timeout=10.0) as client:
+                    resp = client.post(url, json=body, headers=headers)
+                if resp.status_code == 200:
+                    ok = True
+                    detail = tr("test_connected")
+                elif resp.status_code in (401, 403):
+                    detail = tr("test_auth_failed", code=resp.status_code)
+                else:
+                    detail = tr("test_http_error", code=resp.status_code, text=resp.text[:200])
+            except httpx.HTTPError as e:
+                detail = tr("test_request_failed", error=e)
+            QTimer.singleShot(0, lambda: self._on_test_done(button, ok, detail))
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _on_test_done(self, button, ok: bool, detail: str):
+        button.setEnabled(True)
+        button.setText(tr("test"))
+        if ok:
+            QMessageBox.information(self, tr("test_ok"), detail)
+        else:
+            QMessageBox.warning(self, tr("test_fail"), detail)
 
     def _refresh_gpu_info(self):
+        cfg = get_config().asr
         try:
             import torch
             if torch.cuda.is_available():
                 name = torch.cuda.get_device_name(0)
                 mem = torch.cuda.get_device_properties(0).total_mem // (1024**3)
-                self._gpu_info.setText(f"GPU: {name} ({mem} GB)\nCUDA: {torch.version.cuda}")
-                self._whisper_device.setCurrentIndex(0)
+                self._gpu_info.setText(tr("gpu_cuda", name=name, mem=mem, cuda=torch.version.cuda))
+                if cfg.whisper_device == "auto":
+                    self._whisper_device.setCurrentIndex(0)
             else:
-                self._gpu_info.setText("CPU mode (~1-2s per sentence)\nGPU: pip install torch --index-url https://download.pytorch.org/whl/cu126")
-                self._whisper_device.setCurrentIndex(1)
+                self._gpu_info.setText(tr("gpu_cpu_mode"))
+                if cfg.whisper_device == "auto":
+                    self._whisper_device.setCurrentIndex(1)
         except ImportError:
-            self._gpu_info.setText("PyTorch not installed.")
-            self._whisper_device.setCurrentIndex(1)
+            self._gpu_info.setText(tr("gpu_no_torch"))
+            if cfg.whisper_device == "auto":
+                self._whisper_device.setCurrentIndex(1)
 
     def _refresh_devices(self):
         self._device_list.clear()
@@ -246,10 +320,11 @@ class SettingsDialog(QDialog):
         dev_id = item.data(Qt.ItemDataRole.UserRole)
         try:
             d = sd.query_devices(dev_id)
-            info = (
-                f"Channels: {d['max_input_channels']} | "
-                f"Sample Rate: {int(d['default_samplerate'])} Hz | "
-                f"API: {sd.query_hostapis()[d['hostapi']]['name']}"
+            info = tr(
+                "channels_info",
+                channels=d["max_input_channels"],
+                rate=int(d["default_samplerate"]),
+                api=sd.query_hostapis()[d["hostapi"]]["name"],
             )
             self._device_info.setText(info)
         except Exception:
@@ -260,6 +335,10 @@ class SettingsDialog(QDialog):
 
         self._mimo_key.setText(cfg.asr.api_key)
         self._ds_key.setText(cfg.translator.api_key)
+
+        ui_lang = self._env.get("UI_LANGUAGE", "").strip().lower()
+        ui_map = {"": 0, "zh": 1, "en": 2}
+        self._ui_lang.setCurrentIndex(ui_map.get(ui_lang, 0))
 
         lang_map = {"auto": 0, "zh": 1, "en": 2, "ja": 3}
         idx = lang_map.get(cfg.asr.language, 0)
@@ -293,6 +372,9 @@ class SettingsDialog(QDialog):
         env["MIMO_API_KEY"] = self._mimo_key.text().strip()
         env["DEEPSEEK_API_KEY"] = self._ds_key.text().strip()
 
+        ui_vals = ["", "zh", "en"]
+        env["UI_LANGUAGE"] = ui_vals[self._ui_lang.currentIndex()]
+
         langs = ["auto", "zh", "en", "ja"]
         env["SOURCE_LANGUAGE"] = langs[self._lang_group.checkedId()]
         env["TARGET_LANGUAGE"] = self._target_lang.text().strip()
@@ -322,6 +404,7 @@ class SettingsDialog(QDialog):
         import dotenv
         dotenv.load_dotenv(env_path(), override=True)
         reload_config()
+        reload_language()
 
     def _save_and_close(self):
         self._save()

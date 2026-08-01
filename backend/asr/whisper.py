@@ -1,13 +1,12 @@
 """Local faster-whisper ASR backend."""
 
 import logging
-from typing import Optional
 
 import numpy as np
 
+from ..config import get_config
 from .base import ASREngine
 from .registry import register_asr
-from ..config import get_config
 
 logger = logging.getLogger(__name__)
 
@@ -16,7 +15,7 @@ logger = logging.getLogger(__name__)
 class WhisperASR(ASREngine):
     """Local faster-whisper model (NVIDIA GPU acceleration supported)."""
 
-    def __init__(self, model_size: Optional[str] = None, device: Optional[str] = None):
+    def __init__(self, model_size: str | None = None, device: str | None = None):
         if model_size is None or device is None:
             cfg = get_config()
             model_size = model_size or cfg.asr.whisper_model
@@ -24,7 +23,7 @@ class WhisperASR(ASREngine):
         self._model = None
         self._model_size = model_size
         self._device = device
-        self._language: Optional[str] = None
+        self._language: str | None = None
 
     def _load_model(self):
         if self._model is not None:
@@ -71,7 +70,7 @@ class WhisperASR(ASREngine):
     def set_language(self, language: str):
         self._language = None if language == "auto" else language
 
-    def transcribe(self, audio_pcm: bytes) -> Optional[str]:
+    def transcribe(self, audio_pcm: bytes) -> str | None:
         if not audio_pcm:
             return None
 
@@ -86,7 +85,7 @@ class WhisperASR(ASREngine):
             audio_np = audio_np[:max_samples]
 
         try:
-            segments, info = self._model.transcribe(
+            segments, _ = self._model.transcribe(
                 audio_np,
                 language=self._language,
                 beam_size=1,

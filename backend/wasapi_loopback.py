@@ -7,10 +7,9 @@ Windows 10/11 原生支持，零第三方编译依赖。
 
 import ctypes
 import logging
-import threading
 import queue
+import threading
 from ctypes import wintypes
-from typing import Optional
 
 import numpy as np
 
@@ -61,7 +60,9 @@ AUDCLNT_STREAMFLAGS_LOOPBACK = 0x00020000
 AUDCLNT_E_UNSUPPORTED_FORMAT = 0x88890008
 
 eRender = 0
-eConsole = 0
+# AudioDeviceCategory：eConsole=0 / eMultimedia=1 / eCommunications=2
+# 必须用 eMultimedia(1)，否则播放器/浏览器的多媒体会话声音抓不到。
+eMultimedia = 1
 
 # GUIDs
 CLSID_MMDeviceEnumerator = "{BCDE0395-E52F-467C-8E3D-C4579291692E}"
@@ -77,9 +78,9 @@ class WasapiLoopbackCapture:
 
     def __init__(self, sample_rate: int = 16000):
         self.sample_rate = sample_rate
-        self.queue: queue.Queue[Optional[np.ndarray]] = queue.Queue()
+        self.queue: queue.Queue[np.ndarray | None] = queue.Queue(maxsize=50)
         self._running = threading.Event()
-        self._thread: Optional[threading.Thread] = None
+        self._thread: threading.Thread | None = None
         self._actual_sr = sample_rate
         self._actual_channels = 2
         self._actual_bits = 16
@@ -97,7 +98,7 @@ class WasapiLoopbackCapture:
         self._running.clear()
         self.queue.put(None)
 
-    def read(self, timeout: float = 0.5) -> Optional[np.ndarray]:
+    def read(self, timeout: float = 0.5) -> np.ndarray | None:
         try:
             item = self.queue.get(timeout=timeout)
             if item is None:
@@ -105,6 +106,14 @@ class WasapiLoopbackCapture:
             return item
         except queue.Empty:
             return np.array([], dtype=np.float32)
+
+    def flush(self):
+        """清空队列中积压的音频数据（暂停恢复时调用）。"""
+        while True:
+            try:
+                self.queue.get_nowait()
+            except queue.Empty:
+                break
 
     def _capture_loop(self):
         """主捕获循环"""
@@ -129,7 +138,7 @@ class WasapiLoopbackCapture:
             getDef = _make_func(pEnumerator, 4, ctypes.c_long,
                                 ctypes.c_int, ctypes.c_int,
                                 ctypes.POINTER(ctypes.c_void_p))
-            hr = getDef(pEnumerator, eRender, eConsole, ctypes.byref(pDevice))
+            hr = getDef(pEnumerator, eRender, eMultimedia, ctypes.byref(pDevice))
             if hr != 0:
                 logger.error(f"GetDefaultAudioEndpoint 失败: 0x{hr:08X}")
                 return
@@ -236,20 +245,27 @@ class WasapiLoopbackCapture:
                         accumulated = accumulated[target_bytes:]
                         audio_np = self._convert(chunk)
                         if audio_np is not None:
-                            self.queue.put(audio_np)
+                            try:
+                                self.queue.put_nowait(audio_np)
+                            except queue.Full:
+                                # 队列满：丢弃最旧的数据，防止暂停期间内存膨胀
+                                try:
+                                    self.queue.get_nowait()
+                                except queue.Empty:
+                                    pass
 
                 except Exception as e:
                     logger.warning("WASAPI 捕获循环异常: %s", e)
                     break
 
-        except Exception as e:
-            logger.exception("WASAPI 捕获异常: %s", e)
+        except Exception:
+            logger.exception("WASAPI 捕获异常")
         finally:
             self._running.clear()
             self.queue.put(None)  # 通知上层停止
             ole32.CoUninitialize()
 
-    def _convert(self, raw: bytes) -> Optional[np.ndarray]:
+    def _convert(self, raw: bytes) -> np.ndarray | None:
         """Stereo 48kHz → Mono 16kHz float32 using scipy resample_poly."""
         try:
             from scipy.signal import resample_poly
@@ -277,18 +293,6 @@ class WasapiLoopbackCapture:
 
 
 # ── vtable 辅助函数 ───────────────────────────────────
-
-def _vcall(this: ctypes.c_void_p, idx: int, *args):
-    """调用 COM 接口 vtable[idx]，返回 HRESULT"""
-    pvtable = ctypes.cast(this, ctypes.POINTER(ctypes.c_void_p))
-    pvtable = ctypes.cast(pvtable.contents, ctypes.POINTER(ctypes.c_void_p))
-    func_ptr = pvtable[idx]
-    # 动态构建函数类型
-    argtypes = [ctypes.c_void_p] + [type(a) for a in args]
-    restype = ctypes.c_long
-    proto = ctypes.WINFUNCTYPE(restype, *argtypes)
-    return proto(func_ptr)(this, *args)
-
 
 def _make_func(this: ctypes.c_void_p, idx: int, restype, *argtypes):
     """从 vtable[idx] 创建 CFUNCTYPE 包装函数"""

@@ -4,18 +4,18 @@ Vocis — Real-time speech recognition + AI translation subtitle overlay.
 
 import logging
 import sys
-from pathlib import Path
 
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
 
+from backend.config import app_dir, env_path
 from backend.pipeline import SubtitlePipeline
-from backend.config import get_config, env_path
+from gui.main_window import MainWindow
 from gui.overlay import SubtitleOverlay, SubtitleTray
 
 
 def _setup_logging():
-    log_dir = Path(__file__).parent / "logs"
+    log_dir = app_dir() / "logs"
     log_dir.mkdir(exist_ok=True)
     log_file = log_dir / "vocis.log"
 
@@ -63,7 +63,7 @@ def main():
         os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
 
     # Load stylesheet
-    qss_path = Path(__file__).parent / "assets" / "style.qss"
+    qss_path = app_dir() / "assets" / "style.qss"
     if qss_path.exists():
         app.setStyleSheet(qss_path.read_text(encoding="utf-8"))
 
@@ -79,7 +79,11 @@ def main():
 
     overlay = SubtitleOverlay()
     pipeline = SubtitlePipeline()
-    tray = SubtitleTray(app, pipeline=pipeline, subtitle_widget=overlay)
+    main_window = MainWindow(pipeline=pipeline, subtitle_widget=overlay)
+    tray = SubtitleTray(
+        app, pipeline=pipeline, subtitle_widget=overlay, main_window=main_window
+    )
+    main_window.tray_manager = tray
     pipeline.on_subtitle(overlay.subtitle_signal.emit)
     pipeline.on_subtitle_stream(overlay._stream_signal.emit)
 
@@ -91,21 +95,25 @@ def main():
 
     # Check for updates in background
     from backend.updater import check_update_async
+    from gui.i18n import tr
     from gui.notification import notify_info
 
     def _on_update(latest: str | None):
         if latest:
-            notify_info(
-                f"New version {latest} available",
-                f"Download: https://github.com/Mineocean/Vocis/releases/tag/{latest}",
-            )
-            logger.info("Update available: %s", latest)
+            def _notify():
+                notify_info(
+                    tr("update_available", version=latest),
+                    tr("update_download", url=f"https://github.com/Mineocean/Vocis/releases/tag/{latest}"),
+                )
+                logger.info("Update available: %s", latest)
+            # Qt 对象必须在主线程操作：排队回主线程执行
+            QTimer.singleShot(0, _notify)
 
     try:
         from importlib.metadata import version as pkg_version
         current_ver = pkg_version("vocis")
     except Exception:
-        current_ver = "0.2.1"
+        current_ver = "0.3.0-alpha"
     check_update_async(current_ver, _on_update)
 
     # Keep event loop alive

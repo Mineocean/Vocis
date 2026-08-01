@@ -1,13 +1,12 @@
 """ASR backend registry and factory."""
 
 import logging
-from typing import Type
 
 from .base import ASREngine
 
 logger = logging.getLogger(__name__)
 
-_REGISTRY: dict[str, Type[ASREngine]] = {}
+_REGISTRY: dict[str, type[ASREngine]] = {}
 
 
 def register_asr(name: str):

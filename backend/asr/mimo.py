@@ -5,14 +5,13 @@ import base64
 import io
 import logging
 import wave
-from typing import Optional
 
 import httpx
 
-from .base import ASREngine
-from .registry import register_asr
 from ..config import get_config
 from ..utils import normalize_api_url
+from .base import ASREngine
+from .registry import register_asr
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +36,7 @@ class MiMoASR(ASREngine):
         self.api_key = cfg.asr.api_key
         self.language = cfg.asr.language
         self.model = cfg.asr.model
-        self._client: Optional[httpx.AsyncClient] = None
+        self._client: httpx.AsyncClient | None = None
         self._closed = False
         self.base_url = normalize_api_url(cfg.asr.base_url)
 
@@ -59,7 +58,7 @@ class MiMoASR(ASREngine):
     def set_language(self, language: str):
         self.language = language
 
-    async def transcribe_async(self, audio_pcm: bytes) -> Optional[str]:
+    async def transcribe_async(self, audio_pcm: bytes) -> str | None:
         if not audio_pcm:
             return None
 
@@ -100,7 +99,7 @@ class MiMoASR(ASREngine):
             logger.error("MiMo request error: %s", e)
             return None
 
-    def transcribe(self, audio_pcm: bytes) -> Optional[str]:
+    def transcribe(self, audio_pcm: bytes) -> str | None:
         """Sync fallback - runs async in new event loop."""
         try:
             loop = asyncio.get_running_loop()

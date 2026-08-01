@@ -1,3 +1,5 @@
+import sys
+
 import sounddevice as sd
 
 all_devs = sd.query_devices()
@@ -12,7 +14,7 @@ for i, api in enumerate(hostapis):
 
 if wasapi_idx is None:
     print("ERROR: no WASAPI hostapi found")
-    exit(1)
+    sys.exit(1)
 
 print(f"WASAPI hostapi index: {wasapi_idx}")
 print()

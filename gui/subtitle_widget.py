@@ -11,10 +11,13 @@
 
 import logging
 
-from PySide6.QtCore import Qt, QTimer, QPoint, QSize, Signal
-from PySide6.QtGui import QFont, QPainter, QColor, QPen
+from PySide6.QtCore import QPoint, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QFont, QPainter, QPen
 from PySide6.QtWidgets import (
-    QApplication, QLabel, QVBoxLayout, QWidget,
+    QApplication,
+    QLabel,
+    QVBoxLayout,
+    QWidget,
 )
 
 from backend.config import get_config
@@ -73,6 +76,7 @@ class SubtitleWidget(QWidget):
         self._orig.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         self._orig.setStyleSheet("color: #fafaf9; background: transparent;")
         self._orig.setWordWrap(True)
+        self._orig.setMinimumHeight(24)
         self._orig.hide()
 
         self._trans = QLabel("")
@@ -80,6 +84,7 @@ class SubtitleWidget(QWidget):
         self._trans.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         self._trans.setStyleSheet("color: #d4d4d8; background: transparent;")
         self._trans.setWordWrap(True)
+        self._trans.setMinimumHeight(20)
         self._trans.hide()
 
         lay.addWidget(self._orig)
@@ -160,7 +165,7 @@ class SubtitleWidget(QWidget):
         elif self._resizing:
             d = event.globalPosition().toPoint() - self._drag_start
             nw = max(200, self._resize_start.width() + d.x())
-            nh = max(50, self._resize_start.height() + d.y())
+            nh = max(56, self._resize_start.height() + d.y())
             self.resize(nw, nh)
         elif self._in_handle(event.position()):
             self.setCursor(Qt.CursorShape.SizeFDiagCursor)
@@ -193,14 +198,25 @@ class SubtitleWidget(QWidget):
         self._orig.show()
         self._trans.show()
 
-        # 自适应大小
+        # 先按内容自然宽度决定窗口宽度（上限 900）
         self._orig.adjustSize()
         self._trans.adjustSize()
         tw = max(self._orig.width(), self._trans.width())
-        th = self._orig.height() + self._trans.height()
         w = max(300, min(900, tw + 48 + HANDLE))
-        h = max(50, th + 24)
+        content_w = max(100, w - 48 - HANDLE)
+
+        # 在目标宽度下按换行后的真实高度计算窗口高度，避免文本被裁剪/重叠
+        self._orig.setWordWrap(True)
+        self._trans.setWordWrap(True)
+        oh = self._orig.heightForWidth(content_w)
+        th = self._trans.heightForWidth(content_w)
+        if oh <= 0 or th <= 0:  # 个别字体下 heightForWidth 可能无效，退回估算
+            oh = self._orig.height()
+            th = self._trans.height()
+        h = max(50, oh + th + 8 + 1 + 8)  # margins + spacing
+
         self.resize(w, h)
+        self._content.resize(w, h)
 
         self._apply_position()
         self.show()
