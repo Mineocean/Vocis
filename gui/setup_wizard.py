@@ -1,24 +1,23 @@
 """First-run setup wizard — guides API key configuration."""
 
-from pathlib import Path
-
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
-    QDialog,
-    QVBoxLayout,
-    QHBoxLayout,
-    QFormLayout,
-    QLineEdit,
     QCheckBox,
-    QPushButton,
-    QLabel,
+    QDialog,
+    QFormLayout,
     QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPushButton,
     QStackedWidget,
+    QVBoxLayout,
     QWidget,
 )
 
-from backend.config import read_env_file, write_env_file
+from backend.config import app_dir, read_env_file, write_env_file
+from gui.i18n import tr
 
 
 class SetupWizard(QDialog):
@@ -26,13 +25,13 @@ class SetupWizard(QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Vocis Setup")
+        self.setWindowTitle(tr("wizard_title"))
         self.setFixedSize(480, 380)
 
         self._env = read_env_file()
         self._build_ui()
 
-        icon_path = Path(__file__).parent.parent / "assets" / "vocis_32.png"
+        icon_path = app_dir() / "assets" / "vocis_32.png"
         if icon_path.exists():
             self.setWindowIcon(QIcon(str(icon_path)))
 
@@ -46,12 +45,12 @@ class SetupWizard(QDialog):
         layout.addWidget(self._stack)
 
         nav = QHBoxLayout()
-        self._back_btn = QPushButton("Back")
+        self._back_btn = QPushButton(tr("wizard_back"))
         self._back_btn.clicked.connect(self._go_back)
-        self._next_btn = QPushButton("Next")
+        self._next_btn = QPushButton(tr("wizard_next"))
         self._next_btn.setDefault(True)
         self._next_btn.clicked.connect(self._go_next)
-        self._skip_btn = QPushButton("Skip")
+        self._skip_btn = QPushButton(tr("wizard_skip"))
         self._skip_btn.clicked.connect(self._skip)
 
         nav.addWidget(self._back_btn)
@@ -66,16 +65,12 @@ class SetupWizard(QDialog):
         page = QWidget()
         layout = QVBoxLayout(page)
 
-        title = QLabel("Welcome to Vocis")
+        title = QLabel(tr("wizard_welcome"))
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         title.setStyleSheet("font-size: 20px; font-weight: 600; margin: 20px 0;")
         layout.addWidget(title)
 
-        desc = QLabel(
-            "Real-time speech recognition + AI translation subtitle overlay.\n\n"
-            "This wizard will help you configure API keys.\n"
-            "You can skip and configure later in Settings."
-        )
+        desc = QLabel(tr("wizard_desc"))
         desc.setAlignment(Qt.AlignmentFlag.AlignCenter)
         desc.setWordWrap(True)
         layout.addWidget(desc)
@@ -87,29 +82,29 @@ class SetupWizard(QDialog):
         page = QWidget()
         layout = QVBoxLayout(page)
 
-        title = QLabel("API Configuration")
+        title = QLabel(tr("wizard_api_config"))
         title.setStyleSheet("font-size: 16px; font-weight: 600; margin-bottom: 8px;")
         layout.addWidget(title)
 
         # MiMo ASR
-        mimo_group = QGroupBox("MiMo ASR (Speech Recognition)")
+        mimo_group = QGroupBox(tr("wizard_mimo_group"))
         mimo_form = QFormLayout(mimo_group)
         self._mimo_key = QLineEdit()
         self._mimo_key.setEchoMode(QLineEdit.EchoMode.Password)
-        self._mimo_key.setPlaceholderText("Enter MiMo API Key (optional if using Whisper)")
-        mimo_form.addRow("API Key:", self._mimo_key)
+        self._mimo_key.setPlaceholderText(tr("wizard_mimo_ph"))
+        mimo_form.addRow(tr("enter_mimo_key"), self._mimo_key)
         layout.addWidget(mimo_group)
 
         # DeepSeek
-        ds_group = QGroupBox("DeepSeek (Translation)")
+        ds_group = QGroupBox(tr("wizard_ds_group"))
         ds_form = QFormLayout(ds_group)
         self._ds_key = QLineEdit()
         self._ds_key.setEchoMode(QLineEdit.EchoMode.Password)
-        self._ds_key.setPlaceholderText("Enter DeepSeek API Key")
-        ds_form.addRow("API Key:", self._ds_key)
+        self._ds_key.setPlaceholderText(tr("wizard_ds_ph"))
+        ds_form.addRow(tr("enter_ds_key"), self._ds_key)
         layout.addWidget(ds_group)
 
-        self._remember = QCheckBox("Save keys to .env file")
+        self._remember = QCheckBox(tr("wizard_remember"))
         self._remember.setChecked(True)
         layout.addWidget(self._remember)
 
@@ -120,18 +115,12 @@ class SetupWizard(QDialog):
         page = QWidget()
         layout = QVBoxLayout(page)
 
-        title = QLabel("Setup Complete")
+        title = QLabel(tr("wizard_complete"))
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         title.setStyleSheet("font-size: 20px; font-weight: 600; margin: 20px 0;")
         layout.addWidget(title)
 
-        info = QLabel(
-            "Vocis is ready.\n\n"
-            "Hotkeys:\n"
-            "  Ctrl+Shift+S  Pause / Resume\n"
-            "  Ctrl+Shift+L  Switch language\n\n"
-            "Right-click the tray icon for more options."
-        )
+        info = QLabel(tr("wizard_ready"))
         info.setAlignment(Qt.AlignmentFlag.AlignCenter)
         info.setWordWrap(True)
         layout.addWidget(info)
@@ -143,7 +132,7 @@ class SetupWizard(QDialog):
         idx = self._stack.currentIndex()
         self._back_btn.setVisible(idx > 0)
         self._skip_btn.setVisible(idx < 2)
-        self._next_btn.setText("Finish" if idx == 2 else "Next")
+        self._next_btn.setText(tr("wizard_finish") if idx == 2 else tr("wizard_next"))
 
     def _go_back(self):
         idx = self._stack.currentIndex()

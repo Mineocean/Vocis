@@ -1,17 +1,17 @@
 """MiMo-V2.5-ASR cloud backend."""
 
+import asyncio
 import base64
 import io
 import logging
 import wave
-from typing import Optional
 
 import httpx
 
-from .base import ASREngine
-from .registry import register_asr
 from ..config import get_config
 from ..utils import normalize_api_url
+from .base import ASREngine
+from .registry import register_asr
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +36,7 @@ class MiMoASR(ASREngine):
         self.api_key = cfg.asr.api_key
         self.language = cfg.asr.language
         self.model = cfg.asr.model
-        self._client: Optional[httpx.AsyncClient] = None
+        self._client: httpx.AsyncClient | None = None
         self._closed = False
         self.base_url = normalize_api_url(cfg.asr.base_url)
 
@@ -58,7 +58,7 @@ class MiMoASR(ASREngine):
     def set_language(self, language: str):
         self.language = language
 
-    async def transcribe_async(self, audio_pcm: bytes) -> Optional[str]:
+    async def transcribe_async(self, audio_pcm: bytes) -> str | None:
         if not audio_pcm:
             return None
 
@@ -88,7 +88,7 @@ class MiMoASR(ASREngine):
             data = resp.json()
             text = data.get("choices", [{}])[0].get("message", {}).get("content", "")
             if text:
-                logger.info("MiMo ASR: %s", text)
+                logger.debug("MiMo ASR: %s", text)
                 return text.strip()
             logger.warning("MiMo ASR returned empty text")
             return None
@@ -99,11 +99,10 @@ class MiMoASR(ASREngine):
             logger.error("MiMo request error: %s", e)
             return None
 
-    def transcribe(self, audio_pcm: bytes) -> Optional[str]:
+    def transcribe(self, audio_pcm: bytes) -> str | None:
         """Sync fallback - runs async in new event loop."""
-        import asyncio
         try:
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             if loop.is_running():
                 logger.warning("Sync transcribe called in async context, use transcribe_async instead")
                 return None
@@ -112,13 +111,10 @@ class MiMoASR(ASREngine):
             return asyncio.run(self.transcribe_async(audio_pcm))
 
     def close(self):
-        self._closed = True
+        """Close the HTTP client."""
         if self._client:
-            import asyncio
             try:
-                loop = asyncio.get_event_loop()
-                if not loop.is_running():
-                    loop.run_until_complete(self._client.aclose())
+                asyncio.run(self._client.aclose())
             except RuntimeError:
                 pass
             self._client = None

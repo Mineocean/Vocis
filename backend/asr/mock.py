@@ -1,7 +1,7 @@
 """Mock ASR backend for testing."""
 
 import logging
-from typing import Optional
+from typing import ClassVar
 
 from .base import ASREngine
 from .registry import register_asr
@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 class MockASR(ASREngine):
     """Mock ASR - returns preset texts, for testing translation/GUI pipeline."""
 
-    _mock_texts = [
+    _mock_texts: ClassVar[list[str]] = [
         "Hello, how are you today?",
         "The weather is beautiful outside.",
         "I think artificial intelligence is fascinating.",
@@ -27,7 +27,7 @@ class MockASR(ASREngine):
     def __init__(self):
         self._counter = 0
 
-    def transcribe(self, audio_pcm: bytes) -> Optional[str]:
+    def transcribe(self, audio_pcm: bytes) -> str | None:
         if not audio_pcm:
             return None
         text = self._mock_texts[self._counter % len(self._mock_texts)]

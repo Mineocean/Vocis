@@ -1,13 +1,12 @@
 """Unified error/warning notification — system tray bubbles and logging."""
 
 import logging
-from typing import Optional
 
 from PySide6.QtWidgets import QSystemTrayIcon
 
 logger = logging.getLogger(__name__)
 
-_tray: Optional[QSystemTrayIcon] = None
+_tray: QSystemTrayIcon | None = None
 
 
 def set_tray(tray: QSystemTrayIcon):

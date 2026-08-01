@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vocis"
-version = "0.2.1"
+version = "0.3.0-alpha"
 description = "Vocis — Real-time speech recognition + AI translation subtitle overlay"
 requires-python = ">=3.11"
 dependencies = [
@@ -31,3 +31,9 @@ dev = [
 
 [tool.setuptools.packages.find]
 include = ["backend*", "gui*"]
+
+[tool.ruff.lint]
+select = ["E", "F"]
+ignore = [
+    "E501",  # 行宽不作硬性限制
+]

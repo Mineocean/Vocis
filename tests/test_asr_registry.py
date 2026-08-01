@@ -1,10 +1,11 @@
 """Tests for ASR plugin registry."""
 
-import pytest
 from unittest.mock import patch
 
-from backend.asr.registry import _REGISTRY, create_asr, list_backends, register_asr
+import pytest
+
 from backend.asr.base import ASREngine
+from backend.asr.registry import _REGISTRY, create_asr, list_backends, register_asr
 
 
 class TestASRRegistry:
@@ -22,9 +23,11 @@ class TestASRRegistry:
 
     def test_create_unknown_backend(self, mock_config):
         mock_config.asr.backend = "nonexistent"
-        with patch.dict(_REGISTRY, clear=True):
-            with pytest.raises(ValueError, match="Unknown ASR backend"):
-                create_asr()
+        with (
+            patch.dict(_REGISTRY, clear=True),
+            pytest.raises(ValueError, match="Unknown ASR backend"),
+        ):
+            create_asr()
 
     def test_register_custom_backend(self):
         @register_asr("test_custom")

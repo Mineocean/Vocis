@@ -5,13 +5,21 @@
 """
 
 import os
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
 
 import dotenv
 
-_env_path = Path(__file__).parent.parent / ".env"
+
+def app_dir() -> Path:
+    """应用根目录：PyInstaller 打包后为 exe 所在目录，开发时为项目根目录。"""
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent.parent
+
+
+_env_path = app_dir() / ".env"
 if _env_path.exists():
     dotenv.load_dotenv(_env_path)
 
@@ -25,7 +33,7 @@ def env_path() -> Path:
     return _env_path
 
 
-def read_env_file(path: Optional[Path] = None) -> dict[str, str]:
+def read_env_file(path: Path | None = None) -> dict[str, str]:
     """读取 .env 文件为 dict，保留注释和格式信息以外的键值对"""
     p = path or _env_path
     env: dict[str, str] = {}
@@ -40,7 +48,7 @@ def read_env_file(path: Optional[Path] = None) -> dict[str, str]:
     return env
 
 
-def write_env_file(env: dict[str, str], path: Optional[Path] = None):
+def write_env_file(env: dict[str, str], path: Path | None = None):
     """写入 .env 文件，保留原有注释和格式"""
     p = path or _env_path
     if not p.exists():
@@ -71,7 +79,7 @@ def write_env_file(env: dict[str, str], path: Optional[Path] = None):
 @dataclass
 class ASRConfig:
     """ASR 配置（MiMo 云端 / Whisper 本地）"""
-    backend: str = field(default_factory=lambda: _env("ASR_BACKEND", "whisper"))  # whisper | mimo | mock
+    backend: str = field(default_factory=lambda: _env("ASR_BACKEND", "mimo"))  # whisper | mimo | mock
     api_key: str = field(default_factory=lambda: _env("MIMO_API_KEY"))
     base_url: str = field(default_factory=lambda: _env("MIMO_BASE_URL", "https://api.xiaomimimo.com/v1"))
     model: str = field(default_factory=lambda: _env("MIMO_ASR_MODEL", "mimo-v2.5-asr"))
@@ -112,12 +120,18 @@ class AppConfig:
     sample_rate: int = 16000
     vad_threshold: float = field(default_factory=lambda: float(_env("VAD_THRESHOLD", "0.5")))
     vad_model_path: str = field(default_factory=lambda: _env("VAD_MODEL_PATH", ""))
-    speech_padding_ms: int = 400
-    min_speech_duration_ms: int = 300
-    silence_duration_ms: int = 600
+    speech_padding_ms: int = field(default_factory=lambda: int(_env("VAD_PADDING_MS", "400")))
+    min_speech_duration_ms: int = field(default_factory=lambda: int(_env("VAD_MIN_SPEECH_MS", "300")))
+    silence_duration_ms: int = field(default_factory=lambda: int(_env("VAD_SILENCE_MS", "350")))
+    max_speech_duration_ms: int = field(default_factory=lambda: int(_env("VAD_MAX_SPEECH_MS", "5000")))
+
+    # ── 增量实时识别（方案 D：滚动累积 + 文本差分） ──
+    incremental_enabled: bool = field(default_factory=lambda: _env("INCREMENTAL_ENABLED", "true").lower() == "true")
+    incremental_interval: float = field(default_factory=lambda: float(_env("INCREMENTAL_INTERVAL", "1.2")))
+    incremental_max_seconds: float = field(default_factory=lambda: float(_env("INCREMENTAL_MAX_SECONDS", "5.0")))
 
 
-_config_instance: Optional[AppConfig] = None
+_config_instance: AppConfig | None = None
 
 
 def get_config() -> AppConfig:

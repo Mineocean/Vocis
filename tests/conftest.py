@@ -1,7 +1,9 @@
 """Shared test fixtures."""
 
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
+
 from backend.cache import TranslationCache
 
 
