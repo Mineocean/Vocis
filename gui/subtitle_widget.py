@@ -47,6 +47,7 @@ class SubtitleWidget(QWidget):
         self._position = "bottom"  # bottom / center / top
         self._screen_index = 0
         self._opacity = 0.9
+        self._user_positioned = False  # 用户手动拖拽后，字幕更新不再复位
 
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint
@@ -106,7 +107,9 @@ class SubtitleWidget(QWidget):
         return QApplication.primaryScreen()
 
     def _apply_position(self):
-        """根据配置设置字幕位置"""
+        """根据配置设置字幕位置。用户手动拖拽后不再自动复位。"""
+        if self._user_positioned:
+            return
         screen = self._get_target_screen()
         if not screen:
             return
@@ -174,6 +177,8 @@ class SubtitleWidget(QWidget):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
+        if self._dragging:
+            self._user_positioned = True
         self._dragging = False
         self._resizing = False
         self.setCursor(Qt.CursorShape.OpenHandCursor)
