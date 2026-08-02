@@ -199,14 +199,18 @@ class SubtitleWidget(QWidget):
     def _update_display(self, original: str, translation: str):
         """更新字幕显示并自适应大小"""
         self._orig.setText(original)
-        self._trans.setText(translation)
+        has_trans = bool(translation and translation.strip())
+        if has_trans:
+            self._trans.setText(translation)
+            self._trans.show()
+        else:
+            self._trans.hide()
         self._orig.show()
-        self._trans.show()
 
         # 先按内容自然宽度决定窗口宽度（上限 900）
         self._orig.adjustSize()
         self._trans.adjustSize()
-        tw = max(self._orig.width(), self._trans.width())
+        tw = max(self._orig.width(), self._trans.width() if has_trans else 0)
         w = max(300, min(900, tw + 48 + HANDLE))
         content_w = max(100, w - 48 - HANDLE)
 
@@ -214,10 +218,9 @@ class SubtitleWidget(QWidget):
         self._orig.setWordWrap(True)
         self._trans.setWordWrap(True)
         oh = self._orig.heightForWidth(content_w)
-        th = self._trans.heightForWidth(content_w)
-        if oh <= 0 or th <= 0:  # 个别字体下 heightForWidth 可能无效，退回估算
+        th = self._trans.heightForWidth(content_w) if has_trans else 0
+        if oh <= 0:  # 个别字体下 heightForWidth 可能无效，退回估算
             oh = self._orig.height()
-            th = self._trans.height()
         h = max(50, oh + th + 8 + 1 + 8)  # margins + spacing
 
         self.resize(w, h)

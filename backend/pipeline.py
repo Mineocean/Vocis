@@ -395,15 +395,14 @@ class SubtitlePipeline:
             s = sent.strip()
             if not s:
                 continue
-            # 跳译模式（源语言 == 目标语言）：原文直接作为译文
+            # 跳译模式（源语言 == 目标语言）：译文保持为空，字幕只显示原文
             if self._skip_translate:
-                translation = s
-            else:
-                try:
-                    translation = await self.translator.translate_async(s)
-                except Exception:
-                    logger.exception("Incremental translate error")
-                    continue
+                continue
+            try:
+                translation = await self.translator.translate_async(s)
+            except Exception:
+                logger.exception("Incremental translate error")
+                continue
             if translation:
                 self._confirmed_trans = (
                     (self._confirmed_trans + " " + translation).strip()
@@ -416,20 +415,21 @@ class SubtitlePipeline:
         residual = self._residual.strip()
         if not residual:
             return
-        if self._skip_translate:
-            translation = residual
-        else:
+        # 跳译模式（源语言 == 目标语言）：译文保持为空，字幕只显示原文
+        if not self._skip_translate:
             try:
                 translation = await self.translator.translate_async(residual)
             except Exception:
                 logger.exception("Incremental flush translate error")
                 return
-        if translation:
-            self._confirmed_trans = (
-                (self._confirmed_trans + " " + translation).strip()
-                if self._confirmed_trans
-                else translation
-            )
+            if translation:
+                self._confirmed_trans = (
+                    (self._confirmed_trans + " " + translation).strip()
+                    if self._confirmed_trans
+                    else translation
+                )
+                self._emit_stream(self._last_text, self._confirmed_trans, True)
+        else:
             self._emit_stream(self._last_text, self._confirmed_trans, True)
         self._residual = ""
 
