@@ -1,6 +1,7 @@
 """Local faster-whisper ASR backend."""
 
 import logging
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -10,6 +11,19 @@ from .base import ASREngine, ASRResult
 from .registry import register_asr
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_model_path(model_path: str) -> Path:
+    """解析模型路径：优先 _MEIPASS（PyInstaller 解压目录），否则相对/绝对路径。"""
+    p = Path(model_path)
+    if p.exists():
+        return p
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        bundled = Path(meipass) / model_path
+        if bundled.exists():
+            return bundled
+    return p
 
 
 @register_asr("whisper")
@@ -22,10 +36,11 @@ class WhisperASR(ASREngine):
             model_path = model_path or cfg.asr.whisper_model_path
             device = device or cfg.asr.whisper_device
         # 校验模型目录存在，缺失时抛异常（由 create_asr 回退 MiMo）
-        if not Path(model_path).exists():
+        resolved = _resolve_model_path(model_path)
+        if not resolved.exists():
             raise FileNotFoundError(f"Whisper model path not found: {model_path}")
         self._model = None
-        self._model_path = model_path
+        self._model_path = str(resolved).replace("\\", "/")
         self._device = device
         self._language: str | None = None
 

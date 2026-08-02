@@ -20,6 +20,7 @@ a = Analysis(
     datas=[
         (".env.example", "."),
         ("assets", "assets"),
+        ("models/faster-whisper-base", "models/faster-whisper-base"),
     ],
     hiddenimports=[
         "sounddevice",
@@ -31,6 +32,8 @@ a = Analysis(
         "dotenv",
         "pynput",
         "comtypes",
+        "faster_whisper",
+        "ctranslate2",
         "backend",
         "backend.config",
         "backend.capture",
@@ -61,7 +64,6 @@ a = Analysis(
         "torch",
         "torchvision",
         "torchaudio",
-        "faster_whisper",
         "tensorflow",
         "tensorboard",
         "triton",
