@@ -10,7 +10,7 @@ import httpx
 
 from ..config import get_config
 from ..utils import normalize_api_url
-from .base import ASREngine
+from .base import ASREngine, ASRResult
 from .registry import register_asr
 
 logger = logging.getLogger(__name__)
@@ -58,7 +58,7 @@ class MiMoASR(ASREngine):
     def set_language(self, language: str):
         self.language = language
 
-    async def transcribe_async(self, audio_pcm: bytes) -> str | None:
+    async def transcribe_async(self, audio_pcm: bytes) -> ASRResult | None:
         if not audio_pcm:
             return None
 
@@ -89,7 +89,8 @@ class MiMoASR(ASREngine):
             text = data.get("choices", [{}])[0].get("message", {}).get("content", "")
             if text:
                 logger.debug("MiMo ASR: %s", text)
-                return text.strip()
+                # MiMo 云端不暴露检测语言，语言信息返回 None、置信度 0
+                return text.strip(), None, 0.0
             logger.warning("MiMo ASR returned empty text")
             return None
         except httpx.HTTPStatusError as e:
@@ -99,7 +100,7 @@ class MiMoASR(ASREngine):
             logger.error("MiMo request error: %s", e)
             return None
 
-    def transcribe(self, audio_pcm: bytes) -> str | None:
+    def transcribe(self, audio_pcm: bytes) -> ASRResult | None:
         """Sync fallback - runs async in new event loop."""
         try:
             loop = asyncio.get_running_loop()

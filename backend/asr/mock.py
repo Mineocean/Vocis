@@ -27,10 +27,10 @@ class MockASR(ASREngine):
     def __init__(self):
         self._counter = 0
 
-    def transcribe(self, audio_pcm: bytes) -> str | None:
+    def transcribe(self, audio_pcm: bytes) -> tuple[str, str, float] | None:
         if not audio_pcm:
             return None
         text = self._mock_texts[self._counter % len(self._mock_texts)]
         self._counter += 1
         logger.info("Mock ASR: %s", text)
-        return text
+        return text, "zh", 1.0

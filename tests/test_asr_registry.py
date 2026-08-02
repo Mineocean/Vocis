@@ -44,7 +44,10 @@ class TestASRRegistry:
         engine = create_asr()
         result = engine.transcribe(b"\x00\x00" * 1000)
         assert result is not None
-        assert isinstance(result, str)
+        text, lang, prob = result
+        assert isinstance(text, str)
+        assert lang == "zh"
+        assert prob == 1.0
         engine.close()
 
     def test_mock_asr_empty_input(self, mock_config):
