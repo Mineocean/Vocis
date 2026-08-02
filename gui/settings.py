@@ -187,9 +187,17 @@ class SettingsDialog(QDialog):
         self._whisper_device.addItems(["cuda (GPU)", "cpu (CPU)", "auto"])
         grid.addWidget(self._whisper_device, 5, 1)
 
+        grid.addWidget(QLabel(tr("whisper_model_path")), 6, 0)
+        self._whisper_model_path = QLineEdit()
+        self._whisper_model_path.setPlaceholderText("models/faster-whisper-base")
+        grid.addWidget(self._whisper_model_path, 6, 1)
+
+        self._skip_translate_check = QCheckBox(tr("skip_translate_same_lang"))
+        grid.addWidget(self._skip_translate_check, 7, 0, 1, 2)
+
         self._gpu_info = QLabel(tr("gpu_checking"))
         self._gpu_info.setWordWrap(True)
-        grid.addWidget(self._gpu_info, 6, 0, 1, 2)
+        grid.addWidget(self._gpu_info, 8, 0, 1, 2)
         QTimer.singleShot(100, self._refresh_gpu_info)
 
         return tab
@@ -366,6 +374,9 @@ class SettingsDialog(QDialog):
         dev_map = {"cuda": 0, "cpu": 1, "auto": 2}
         self._whisper_device.setCurrentIndex(dev_map.get(cfg.asr.whisper_device, 2))
 
+        self._whisper_model_path.setText(cfg.asr.whisper_model_path)
+        self._skip_translate_check.setChecked(cfg.asr.skip_translate_when_same_lang)
+
     def _save(self):
         env = read_env_file()
 
@@ -397,6 +408,8 @@ class SettingsDialog(QDialog):
         env["WHISPER_MODEL"] = models[self._whisper_model.currentIndex()]
         devices = ["cuda", "cpu", "auto"]
         env["WHISPER_DEVICE"] = devices[self._whisper_device.currentIndex()]
+        env["WHISPER_MODEL_PATH"] = self._whisper_model_path.text().strip() or "models/faster-whisper-base"
+        env["SKIP_TRANSLATE_SAME_LANG"] = "true" if self._skip_translate_check.isChecked() else "false"
 
         write_env_file(env)
         logger.info("Settings saved")
