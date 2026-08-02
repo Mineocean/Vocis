@@ -283,6 +283,21 @@ class SubtitlePipeline:
         self._skip_translate = False
 
     @staticmethod
+    def _audio_has_speech(audio: bytes, min_seconds: float = 0.4,
+                          rms_threshold: float = 0.005) -> bool:
+        """判断滚动音频是否值得送 ASR：时长足够且非静音。
+
+        避免把 0.2s 碎片或纯静音喂给 whisper，whisper 对这类输入
+        会产生幻觉文本并导致语言检测抖动。
+        """
+        n = len(audio) // 2
+        if n < int(min_seconds * 16000):
+            return False
+        samples = np.frombuffer(audio, dtype=np.int16).astype(np.float32) / 32768.0
+        rms = float(np.sqrt(np.mean(np.square(samples)))) if n else 0.0
+        return rms >= rms_threshold
+
+    @staticmethod
     def _map_lang(lang: str | None) -> str:
         """检测语言代码 → 显示语言名（未知语言返回 '中文' 保守处理）。"""
         if not lang:
@@ -316,6 +331,10 @@ class SubtitlePipeline:
 
             audio = bytes(self._rolling_audio)
             if not audio:
+                continue
+
+            # 门禁：过短或纯静音的碎片不送 ASR，避免 whisper 幻觉文本
+            if not self._audio_has_speech(audio):
                 continue
 
             # 截断过长的滚动缓冲，避免云端 ASR 处理超时

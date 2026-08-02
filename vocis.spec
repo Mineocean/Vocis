@@ -13,6 +13,15 @@ from pathlib import Path
 
 _root = Path(".").resolve()
 
+# opencc 数据文件（config/*.json + dictionary/*.json），打包后随 opencc 包路径展开
+_opencc_base = _root / ".venv" / "Lib" / "site-packages" / "opencc"
+_opencc_datas = []
+if _opencc_base.exists():
+    _opencc_datas += [
+        (str(_opencc_base / "config"), "opencc/config"),
+        (str(_opencc_base / "dictionary"), "opencc/dictionary"),
+    ]
+
 a = Analysis(
     ["main.py"],
     pathex=[str(_root)],
@@ -21,6 +30,7 @@ a = Analysis(
         (".env.example", "."),
         ("assets", "assets"),
         ("models/faster-whisper-base", "models/faster-whisper-base"),
+        *_opencc_datas,
     ],
     hiddenimports=[
         "sounddevice",

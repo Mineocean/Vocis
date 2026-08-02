@@ -12,6 +12,32 @@ from .registry import register_asr
 
 logger = logging.getLogger(__name__)
 
+# 繁体→简体转换器（惰性初始化，opencc 缺失时降级为原文）
+_OPENCC: object | None = None
+_OPENCC_READY = False
+
+
+def _to_simplified(text: str) -> str:
+    """将繁体中文转换为简体；opencc 不可用时原样返回。"""
+    global _OPENCC, _OPENCC_READY
+    if not text or not any("\u4e00" <= c <= "\u9fff" for c in text):
+        return text
+    if not _OPENCC_READY:
+        try:
+            from opencc import OpenCC
+            _OPENCC = OpenCC("t2s")
+        except Exception:
+            logger.warning("opencc not available, keeping traditional Chinese")
+            _OPENCC = None
+        finally:
+            _OPENCC_READY = True
+    if _OPENCC is not None:
+        try:
+            return _OPENCC.convert(text)
+        except Exception:
+            return text
+    return text
+
 
 def _resolve_model_path(model_path: str) -> Path:
     """解析模型路径：优先 _MEIPASS（PyInstaller 解压目录），否则相对/绝对路径。"""
@@ -112,6 +138,7 @@ class WhisperASR(ASREngine):
             )
             text = " ".join(seg.text.strip() for seg in segments)
             if text:
+                text = _to_simplified(text)
                 logger.debug("Whisper ASR: %s", text)
                 return text.strip(), info.language, float(info.language_probability)
             return None
