@@ -8,6 +8,7 @@ from backend.asr.base import ASREngine, ASRResult
 from backend.asr.mock import MockASR
 from backend.asr.mimo import MiMoASR
 from backend.asr.whisper import WhisperASR
+from backend.pipeline import SubtitlePipeline
 
 
 def test_config_whisper_model_path_default():
@@ -79,4 +80,39 @@ def test_whisper_returns_tuple_with_language(mock_cfg):
     result = asr.transcribe(b"\x00" * 3200)
     assert result == ("你好", "zh", 0.99)
     assert asr._model_path == "models/faster-whisper-base"
+
+
+@patch("backend.pipeline.get_config")
+def test_should_skip_translate_when_same_lang(mock_cfg):
+    cfg = MagicMock()
+    cfg.asr.skip_translate_when_same_lang = True
+    cfg.translator.target_language = "中文"
+    mock_cfg.return_value = cfg
+
+    p = SubtitlePipeline.__new__(SubtitlePipeline)
+    # 中文源 + 中文目标 → 跳过
+    assert p._should_skip_translate("zh", 0.98) is True
+    # 低置信度 → 不跳过（保守走翻译）
+    assert p._should_skip_translate("zh", 0.3) is False
+    # 英文源 + 中文目标 → 不跳过
+    assert p._should_skip_translate("en", 0.95) is False
+
+
+@patch("backend.pipeline.get_config")
+def test_should_not_skip_when_disabled(mock_cfg):
+    cfg = MagicMock()
+    cfg.asr.skip_translate_when_same_lang = False
+    cfg.translator.target_language = "中文"
+    mock_cfg.return_value = cfg
+
+    p = SubtitlePipeline.__new__(SubtitlePipeline)
+    assert p._should_skip_translate("zh", 0.98) is False
+
+
+def test_map_lang():
+    assert SubtitlePipeline._map_lang("zh") == "中文"
+    assert SubtitlePipeline._map_lang("en") == "英文"
+    assert SubtitlePipeline._map_lang("ja") == "日文"
+    assert SubtitlePipeline._map_lang(None) == "中文"
+    assert SubtitlePipeline._map_lang("fr") == "中文"
 

@@ -27,6 +27,9 @@ logger = logging.getLogger(__name__)
 # 句子结束标点（中文/英文），用于增量翻译按句切分
 _SENTENCE_RE = re.compile(r"(?<=[。！？!?；;])")
 
+# 检测语言代码 → 显示语言名（whisper info.language 输出）
+_LANG_MAP = {"zh": "中文", "en": "英文", "ja": "日文"}
+
 
 class SubtitlePipeline:
     """
@@ -69,6 +72,9 @@ class SubtitlePipeline:
         self._confirmed_trans = ""                      # 已确认译文（追加式）
         self._residual = ""                             # 当前未完整句子（残句，段结束才翻译）
         self._segment_end = threading.Event()           # VAD 段结束信号
+        self._current_lang: str | None = None           # 当前检测到的源语言代码
+        self._current_lang_prob = 0.0                   # 语言置信度
+        self._skip_translate = False                    # 本段是否跳过翻译（源==目标）
 
     @property
     def is_paused(self) -> bool:
@@ -272,6 +278,26 @@ class SubtitlePipeline:
         self._confirmed_trans = ""
         self._residual = ""
         self._segment_end.clear()
+        self._current_lang = None
+        self._current_lang_prob = 0.0
+        self._skip_translate = False
+
+    @staticmethod
+    def _map_lang(lang: str | None) -> str:
+        """检测语言代码 → 显示语言名（未知语言返回 '中文' 保守处理）。"""
+        if not lang:
+            return "中文"
+        return _LANG_MAP.get(lang, "中文")
+
+    def _should_skip_translate(self, lang: str | None, prob: float) -> bool:
+        """源语言 == 目标语言时跳过翻译；低置信度保守走翻译。"""
+        cfg = get_config()
+        if not cfg.asr.skip_translate_when_same_lang:
+            return False
+        if prob < 0.5:
+            return False
+        mapped = self._map_lang(lang)
+        return mapped == cfg.translator.target_language
 
     async def _incremental_worker(self):
         """周期性识别滚动音频，差分出新增完整句子并增量翻译。"""
@@ -298,13 +324,21 @@ class SubtitlePipeline:
                 audio = audio[-max_bytes:]
 
             try:
-                text = await self.asr.transcribe_async(audio)
+                result = await self.asr.transcribe_async(audio)
             except Exception:
                 logger.exception("Incremental ASR error")
                 continue
+            if not result:
+                continue
+            text, lang, prob = result
+            text = text.strip()
             if not text:
                 continue
-            text = text.strip()
+
+            # 记录检测语言并决定本段是否跳过翻译（源语言 == 目标语言）
+            self._current_lang = lang
+            self._current_lang_prob = prob
+            self._skip_translate = self._should_skip_translate(lang, prob)
 
             new_text = self._diff_text(self._last_text, text)
             self._last_text = text
@@ -342,11 +376,15 @@ class SubtitlePipeline:
             s = sent.strip()
             if not s:
                 continue
-            try:
-                translation = await self.translator.translate_async(s)
-            except Exception:
-                logger.exception("Incremental translate error")
-                continue
+            # 跳译模式（源语言 == 目标语言）：原文直接作为译文
+            if self._skip_translate:
+                translation = s
+            else:
+                try:
+                    translation = await self.translator.translate_async(s)
+                except Exception:
+                    logger.exception("Incremental translate error")
+                    continue
             if translation:
                 self._confirmed_trans = (
                     (self._confirmed_trans + " " + translation).strip()
@@ -359,11 +397,14 @@ class SubtitlePipeline:
         residual = self._residual.strip()
         if not residual:
             return
-        try:
-            translation = await self.translator.translate_async(residual)
-        except Exception:
-            logger.exception("Incremental flush translate error")
-            return
+        if self._skip_translate:
+            translation = residual
+        else:
+            try:
+                translation = await self.translator.translate_async(residual)
+            except Exception:
+                logger.exception("Incremental flush translate error")
+                return
         if translation:
             self._confirmed_trans = (
                 (self._confirmed_trans + " " + translation).strip()
