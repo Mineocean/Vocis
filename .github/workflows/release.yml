@@ -23,8 +23,11 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev]"
+          pip install -e ".[dev,whisper,sherpa]"
           pip install pyinstaller
+
+      - name: Download ASR models
+        run: python scripts/fetch_models.py
 
       - name: Run tests
         run: python -m pytest tests/ -v --tb=short
