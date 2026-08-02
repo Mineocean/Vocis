@@ -7,6 +7,7 @@ from backend.config import AppConfig
 from backend.asr.base import ASREngine, ASRResult
 from backend.asr.mock import MockASR
 from backend.asr.mimo import MiMoASR
+from backend.asr.whisper import WhisperASR
 
 
 def test_config_whisper_model_path_default():
@@ -56,4 +57,26 @@ def test_mimo_asr_returns_no_lang_tuple(MockClient, mock_cfg):
     asr = MiMoASR()
     result = asyncio.run(asr.transcribe_async(b"\x00" * 3200))
     assert result == ("你好", None, 0.0)
+
+
+@patch("backend.asr.whisper.get_config")
+def test_whisper_returns_tuple_with_language(mock_cfg):
+    cfg = MagicMock(
+        asr=MagicMock(
+            whisper_model="base",
+            whisper_device="cpu",
+            whisper_model_path="models/faster-whisper-base",
+        )
+    )
+    mock_cfg.return_value = cfg
+
+    mock_model = MagicMock()
+    mock_info = MagicMock(language="zh", language_probability=0.99)
+    mock_seg = MagicMock(text="你好")
+    mock_model.transcribe.return_value = ([mock_seg], mock_info)
+    asr = WhisperASR()
+    asr._model = mock_model
+    result = asr.transcribe(b"\x00" * 3200)
+    assert result == ("你好", "zh", 0.99)
+    assert asr._model_path == "models/faster-whisper-base"
 

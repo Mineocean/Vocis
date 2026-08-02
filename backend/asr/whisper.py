@@ -5,7 +5,7 @@ import logging
 import numpy as np
 
 from ..config import get_config
-from .base import ASREngine
+from .base import ASREngine, ASRResult
 from .registry import register_asr
 
 logger = logging.getLogger(__name__)
@@ -15,13 +15,13 @@ logger = logging.getLogger(__name__)
 class WhisperASR(ASREngine):
     """Local faster-whisper model (NVIDIA GPU acceleration supported)."""
 
-    def __init__(self, model_size: str | None = None, device: str | None = None):
-        if model_size is None or device is None:
+    def __init__(self, model_path: str | None = None, device: str | None = None):
+        if model_path is None or device is None:
             cfg = get_config()
-            model_size = model_size or cfg.asr.whisper_model
+            model_path = model_path or cfg.asr.whisper_model_path
             device = device or cfg.asr.whisper_device
         self._model = None
-        self._model_size = model_size
+        self._model_path = model_path
         self._device = device
         self._language: str | None = None
 
@@ -51,9 +51,9 @@ class WhisperASR(ASREngine):
                     device = "cpu"
 
             logger.info("Loading Whisper model: %s (device=%s, compute=%s)",
-                        self._model_size, device, compute)
+                        self._model_path, device, compute)
             self._model = WhisperModel(
-                self._model_size,
+                self._model_path,
                 device=device,
                 compute_type=compute,
             )
@@ -70,7 +70,7 @@ class WhisperASR(ASREngine):
     def set_language(self, language: str):
         self._language = None if language == "auto" else language
 
-    def transcribe(self, audio_pcm: bytes) -> str | None:
+    def transcribe(self, audio_pcm: bytes) -> ASRResult | None:
         if not audio_pcm:
             return None
 
@@ -85,7 +85,7 @@ class WhisperASR(ASREngine):
             audio_np = audio_np[:max_samples]
 
         try:
-            segments, _ = self._model.transcribe(
+            segments, info = self._model.transcribe(
                 audio_np,
                 language=self._language,
                 beam_size=1,
@@ -94,7 +94,7 @@ class WhisperASR(ASREngine):
             text = " ".join(seg.text.strip() for seg in segments)
             if text:
                 logger.debug("Whisper ASR: %s", text)
-                return text
+                return text.strip(), info.language, float(info.language_probability)
             return None
         except Exception as e:
             logger.error("Whisper recognition failed: %s", e)
