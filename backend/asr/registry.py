@@ -31,7 +31,13 @@ def create_asr() -> ASREngine:
             return _REGISTRY["mock"]()
         raise ValueError(f"Unknown ASR backend: {backend}. Available: {available}")
 
-    return cls()
+    try:
+        return cls()
+    except Exception as e:
+        logger.warning("Failed to create ASR backend '%s': %s, falling back to mimo", backend, e)
+        if backend != "mimo" and "mimo" in _REGISTRY:
+            return _REGISTRY["mimo"]()
+        raise
 
 
 def list_backends() -> list[str]:

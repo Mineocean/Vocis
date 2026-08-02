@@ -3,6 +3,8 @@
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 from backend.config import AppConfig
 from backend.asr.base import ASREngine, ASRResult
 from backend.asr.mock import MockASR
@@ -115,4 +117,46 @@ def test_map_lang():
     assert SubtitlePipeline._map_lang("ja") == "日文"
     assert SubtitlePipeline._map_lang(None) == "中文"
     assert SubtitlePipeline._map_lang("fr") == "中文"
+
+
+def test_whisper_raises_when_model_missing():
+    with pytest.raises(FileNotFoundError):
+        WhisperASR(model_path="nonexistent-dir", device="cpu")
+
+
+@patch("backend.asr.whisper.get_config")
+def test_whisper_accepts_existing_path(mock_cfg):
+    cfg = MagicMock(
+        asr=MagicMock(
+            whisper_model="base",
+            whisper_device="cpu",
+            whisper_model_path="models/faster-whisper-base",
+        )
+    )
+    mock_cfg.return_value = cfg
+    asr = WhisperASR()
+    assert asr._model_path == "models/faster-whisper-base"
+    assert asr._device == "cpu"
+
+
+@patch("backend.asr.whisper.get_config")
+@patch("backend.config.get_config")
+def test_create_asr_falls_back_to_mimo(mock_cfg, mock_whisper_cfg):
+    cfg = MagicMock(asr=MagicMock(backend="whisper", whisper_model_path="nonexistent-model-dir"))
+    mock_cfg.return_value = cfg
+    mock_whisper_cfg.return_value = cfg
+    from backend.asr.registry import _REGISTRY
+
+    with patch.dict(
+        _REGISTRY,
+        {
+            "whisper": WhisperASR,
+            "mimo": MagicMock(return_value="mimo-engine"),
+        },
+        clear=True,
+    ):
+        from backend.asr.registry import create_asr
+
+        engine = create_asr()
+    assert engine == "mimo-engine"
 

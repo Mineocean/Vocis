@@ -1,6 +1,7 @@
 """Local faster-whisper ASR backend."""
 
 import logging
+from pathlib import Path
 
 import numpy as np
 
@@ -20,6 +21,9 @@ class WhisperASR(ASREngine):
             cfg = get_config()
             model_path = model_path or cfg.asr.whisper_model_path
             device = device or cfg.asr.whisper_device
+        # 校验模型目录存在，缺失时抛异常（由 create_asr 回退 MiMo）
+        if not Path(model_path).exists():
+            raise FileNotFoundError(f"Whisper model path not found: {model_path}")
         self._model = None
         self._model_path = model_path
         self._device = device
