@@ -27,3 +27,6 @@ Thumbs.db
 
 # 会话记录
 session_*.json
+
+# 本地模型（体积大，不提交仓库）
+models/
