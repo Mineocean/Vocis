@@ -86,6 +86,8 @@ class ASRConfig:
     language: str = field(default_factory=lambda: _env("SOURCE_LANGUAGE", "auto"))
     whisper_model: str = field(default_factory=lambda: _env("WHISPER_MODEL", "tiny"))  # tiny/base/small/medium
     whisper_device: str = field(default_factory=lambda: _env("WHISPER_DEVICE", "cuda"))  # cuda / cpu
+    whisper_model_path: str = field(default_factory=lambda: _env("WHISPER_MODEL_PATH", "models/faster-whisper-base"))
+    skip_translate_when_same_lang: bool = field(default_factory=lambda: _env("SKIP_TRANSLATE_SAME_LANG", "true").lower() == "true")
 
 
 @dataclass
