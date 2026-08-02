@@ -45,8 +45,17 @@ MIMO_API_KEY=your-mimo-key
 DEEPSEEK_API_KEY=your-deepseek-key
 SOURCE_LANGUAGE=auto
 TARGET_LANGUAGE=中文
-ASR_BACKEND=mimo
+# whisper = local offline recognition (default), mimo = cloud ASR
+ASR_BACKEND=whisper
+WHISPER_MODEL_PATH=models/faster-whisper-base
+# Skip translation when detected source language equals target (e.g. Chinese audio → Chinese)
+SKIP_TRANSLATE_SAME_LANG=true
 ```
+
+For local Whisper recognition, place a faster-whisper model in `models/faster-whisper-base/`
+(download `Systran/faster-whisper-base` from Hugging Face). Set `ASR_BACKEND=whisper`.
+When the detected source language equals `TARGET_LANGUAGE`, translation is skipped and
+the original text is shown directly.
 
 ## Building from Source
 
