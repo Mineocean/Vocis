@@ -63,12 +63,12 @@ def test_mimo_asr_returns_no_lang_tuple(MockClient, mock_cfg):
 
 
 @patch("backend.asr.whisper.get_config")
-def test_whisper_returns_tuple_with_language(mock_cfg):
+def test_whisper_returns_tuple_with_language(mock_cfg, tmp_path):
     cfg = MagicMock(
         asr=MagicMock(
             whisper_model="base",
             whisper_device="cpu",
-            whisper_model_path="models/faster-whisper-base",
+            whisper_model_path=str(tmp_path),
         )
     )
     mock_cfg.return_value = cfg
@@ -81,7 +81,7 @@ def test_whisper_returns_tuple_with_language(mock_cfg):
     asr._model = mock_model
     result = asr.transcribe(b"\x00" * 3200)
     assert result == ("你好", "zh", 0.99)
-    assert asr._model_path == "models/faster-whisper-base"
+    assert asr._model_path == str(tmp_path).replace("\\", "/")
 
 
 @patch("backend.pipeline.get_config")
@@ -125,17 +125,17 @@ def test_whisper_raises_when_model_missing():
 
 
 @patch("backend.asr.whisper.get_config")
-def test_whisper_accepts_existing_path(mock_cfg):
+def test_whisper_accepts_existing_path(mock_cfg, tmp_path):
     cfg = MagicMock(
         asr=MagicMock(
             whisper_model="base",
             whisper_device="cpu",
-            whisper_model_path="models/faster-whisper-base",
+            whisper_model_path=str(tmp_path),
         )
     )
     mock_cfg.return_value = cfg
     asr = WhisperASR()
-    assert asr._model_path == "models/faster-whisper-base"
+    assert asr._model_path == str(tmp_path).replace("\\", "/")
     assert asr._device == "cpu"
 
 
