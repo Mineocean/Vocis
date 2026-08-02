@@ -3,6 +3,7 @@
 import logging
 import sys
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
@@ -13,7 +14,7 @@ from .registry import register_asr
 logger = logging.getLogger(__name__)
 
 # 繁体→简体转换器（惰性初始化，opencc 缺失时降级为原文）
-_OPENCC: object | None = None
+_OPENCC: Any | None = None
 _OPENCC_READY = False
 
 

@@ -57,6 +57,7 @@ _ZH: dict[str, str] = {
     "whisper_model": "Whisper 模型：",
     "device": "设备：",
     "whisper_model_path": "Whisper 模型路径：",
+    "sherpa_model_path": "Sherpa 流式模型路径：",
     "skip_translate_same_lang": "源语言 = 目标语言时跳过翻译（如中文音频直接显示原文）",
     "gpu_checking": "检测中...",
     "gpu_cuda": "GPU: {name} ({mem} GB)\nCUDA: {cuda}",

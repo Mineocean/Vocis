@@ -43,6 +43,7 @@ class SubtitlePipeline:
         self.vad = VoiceActivityDetector()
         self.asr = create_asr()
         self.translator = DeepSeekTranslator()
+        self._asr_streaming = bool(getattr(self.asr, "is_streaming", False))
 
         self._loop: asyncio.AbstractEventLoop | None = None
         self._loop_thread: threading.Thread | None = None
@@ -66,6 +67,7 @@ class SubtitlePipeline:
         self.incremental_enabled = cfg.incremental_enabled
         self._incremental_interval = cfg.incremental_interval
         self._incremental_max_seconds = cfg.incremental_max_seconds
+        self._stream_sentence_chars = cfg.stream_sentence_chars
         self._rolling_audio: bytearray = bytearray()   # 累积的 int16 PCM（本段）
         self._last_text = ""                            # 上一次 ASR 全文
         self._confirmed_sentences: list[str] = []       # 已翻译的完整句子原文
@@ -183,6 +185,12 @@ class SubtitlePipeline:
         self._paused.set()
         self.capture.set_enabled(True)
         self.vad.reset()
+        if self._asr_streaming:
+            # 暂停期间音频中断，重置流式 ASR 的识别流
+            try:
+                self.asr.start_stream()
+            except Exception:
+                logger.exception("Failed to restart streaming ASR")
         self._reset_incremental()
         logger.info("Pipeline resumed")
 
@@ -220,12 +228,19 @@ class SubtitlePipeline:
                     continue
 
                 if self.incremental_enabled:
-                    # 方案 D：累积 int16 PCM 到滚动缓冲，供增量 worker 周期识别
+                    # 方案 D：增量实时识别
                     pcm = (np.clip(chunk, -1.0, 1.0) * 32767).astype(np.int16)
-                    self._rolling_audio.extend(pcm.tobytes())
-                    # VAD 仅用于检测段边界（静音结束 → 发段结束信号）
-                    if self.vad.process_chunk(chunk):
-                        self._segment_end.set()
+                    if self._asr_streaming:
+                        # 流式 ASR（sherpa）：直接推入音频块，实时增量解码
+                        await asyncio.to_thread(self.asr.push_audio, pcm.tobytes())
+                        if self.vad.process_chunk(chunk):
+                            self._segment_end.set()
+                    else:
+                        # 滚动累积到缓冲，供增量 worker 周期识别
+                        self._rolling_audio.extend(pcm.tobytes())
+                        # VAD 仅用于检测段边界（静音结束 → 发段结束信号）
+                        if self.vad.process_chunk(chunk):
+                            self._segment_end.set()
                 else:
                     # 段落模式：VAD 切段后整体送 ASR
                     speech_segments = self.vad.process_chunk(chunk)
@@ -326,7 +341,47 @@ class SubtitlePipeline:
             # 段结束：翻译残句作为最终确认，然后重置本段状态
             if self._segment_end.is_set():
                 await self._flush_residual()
+                if self._asr_streaming:
+                    # 流式 ASR：结束当前流（取最终文本）并开启新流
+                    final = await asyncio.to_thread(self.asr.end_stream)
+                    if final and final.strip():
+                        logger.debug("Sherpa final segment: %s", final.strip())
+                    await asyncio.to_thread(self.asr.start_stream)
                 self._reset_incremental()
+                continue
+
+            if self._asr_streaming:
+                # 流式 ASR：取当前部分结果做差分（不需要滚动缓冲重识别）
+                try:
+                    text = await asyncio.to_thread(self.asr.get_partial_text)
+                except Exception:
+                    logger.exception("Streaming ASR error")
+                    continue
+                text = (text or "").strip()
+                if not text:
+                    continue
+
+                # sherpa 固定中文模型，语言恒定
+                self._current_lang = "zh"
+                self._current_lang_prob = 1.0
+                self._skip_translate = self._should_skip_translate("zh", 1.0)
+
+                new_text = self._diff_text(self._last_text, text)
+                self._last_text = text
+                if not new_text:
+                    continue
+
+                # sherpa 输出无标点，无法按句子结束标点切分，改为按字数强制切句
+                self._residual += new_text
+                emitted = False
+                while len(self._residual) >= self._stream_sentence_chars:
+                    sent = self._residual[:self._stream_sentence_chars]
+                    self._residual = self._residual[self._stream_sentence_chars:]
+                    await self._translate_sentences([sent])
+                    self._confirmed_sentences.append(sent)
+                    emitted = True
+                if emitted:
+                    self._emit_stream(text, self._confirmed_trans, False)
                 continue
 
             audio = bytes(self._rolling_audio)

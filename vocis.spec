@@ -30,6 +30,7 @@ a = Analysis(
         (".env.example", "."),
         ("assets", "assets"),
         ("models/faster-whisper-base", "models/faster-whisper-base"),
+        ("models/sherpa-streaming-zh-14M", "models/sherpa-streaming-zh-14M"),
         *_opencc_datas,
     ],
     hiddenimports=[
@@ -44,6 +45,7 @@ a = Analysis(
         "comtypes",
         "faster_whisper",
         "ctranslate2",
+        "sherpa_onnx",
         "backend",
         "backend.config",
         "backend.capture",
@@ -54,6 +56,7 @@ a = Analysis(
         "backend.asr.registry",
         "backend.asr.mimo",
         "backend.asr.whisper",
+        "backend.asr.sherpa",
         "backend.asr.mock",
         "backend.translator",
         "backend.pipeline",

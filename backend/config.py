@@ -87,6 +87,7 @@ class ASRConfig:
     whisper_model: str = field(default_factory=lambda: _env("WHISPER_MODEL", "tiny"))  # tiny/base/small/medium
     whisper_device: str = field(default_factory=lambda: _env("WHISPER_DEVICE", "cuda"))  # cuda / cpu
     whisper_model_path: str = field(default_factory=lambda: _env("WHISPER_MODEL_PATH", "models/faster-whisper-base"))
+    sherpa_model_path: str = field(default_factory=lambda: _env("SHERPA_MODEL_PATH", "models/sherpa-streaming-zh-14M"))
     skip_translate_when_same_lang: bool = field(default_factory=lambda: _env("SKIP_TRANSLATE_SAME_LANG", "true").lower() == "true")
 
 
@@ -131,6 +132,7 @@ class AppConfig:
     incremental_enabled: bool = field(default_factory=lambda: _env("INCREMENTAL_ENABLED", "true").lower() == "true")
     incremental_interval: float = field(default_factory=lambda: float(_env("INCREMENTAL_INTERVAL", "1.2")))
     incremental_max_seconds: float = field(default_factory=lambda: float(_env("INCREMENTAL_MAX_SECONDS", "5.0")))
+    stream_sentence_chars: int = field(default_factory=lambda: int(_env("STREAM_SENTENCE_CHARS", "12")))
 
 
 _config_instance: AppConfig | None = None

@@ -186,7 +186,7 @@ class SettingsDialog(QDialog):
 
         grid.addWidget(QLabel(tr("asr_backend")), 3, 0)
         self._asr_backend = QComboBox()
-        self._asr_backend.addItems(["mimo (cloud)", "whisper (local)", "mock (test)"])
+        self._asr_backend.addItems(["mimo (cloud)", "whisper (local)", "sherpa (streaming zh)", "mock (test)"])
         grid.addWidget(self._asr_backend, 3, 1)
 
         grid.addWidget(QLabel(tr("whisper_model")), 4, 0)
@@ -204,12 +204,17 @@ class SettingsDialog(QDialog):
         self._whisper_model_path.setPlaceholderText("models/faster-whisper-base")
         grid.addWidget(self._whisper_model_path, 6, 1)
 
+        grid.addWidget(QLabel(tr("sherpa_model_path")), 7, 0)
+        self._sherpa_model_path = QLineEdit()
+        self._sherpa_model_path.setPlaceholderText("models/sherpa-streaming-zh-14M")
+        grid.addWidget(self._sherpa_model_path, 7, 1)
+
         self._skip_translate_check = QCheckBox(tr("skip_translate_same_lang"))
-        grid.addWidget(self._skip_translate_check, 7, 0, 1, 2)
+        grid.addWidget(self._skip_translate_check, 8, 0, 1, 2)
 
         self._gpu_info = QLabel(tr("gpu_checking"))
         self._gpu_info.setWordWrap(True)
-        grid.addWidget(self._gpu_info, 8, 0, 1, 2)
+        grid.addWidget(self._gpu_info, 9, 0, 1, 2)
         QTimer.singleShot(100, self._refresh_gpu_info)
 
         return tab
@@ -380,7 +385,7 @@ class SettingsDialog(QDialog):
         stream = self._env.get("STREAM_TRANSLATION", "true").lower() == "true"
         self._check_stream.setChecked(stream)
 
-        backend_map = {"mimo": 0, "whisper": 1, "mock": 2}
+        backend_map = {"mimo": 0, "whisper": 1, "sherpa": 2, "mock": 3}
         self._asr_backend.setCurrentIndex(backend_map.get(cfg.asr.backend.lower(), 0))
 
         model_map = {"tiny": 0, "base": 1, "small": 2}
@@ -389,6 +394,7 @@ class SettingsDialog(QDialog):
         self._whisper_device.setCurrentIndex(dev_map.get(cfg.asr.whisper_device, 2))
 
         self._whisper_model_path.setText(cfg.asr.whisper_model_path)
+        self._sherpa_model_path.setText(cfg.asr.sherpa_model_path)
         self._skip_translate_check.setChecked(cfg.asr.skip_translate_when_same_lang)
 
     def _save(self):
@@ -415,7 +421,7 @@ class SettingsDialog(QDialog):
             dev_id = item.data(Qt.ItemDataRole.UserRole)
             env["AUDIO_DEVICE"] = str(dev_id) if dev_id is not None else "auto"
 
-        backends = ["mimo", "whisper", "mock"]
+        backends = ["mimo", "whisper", "sherpa", "mock"]
         env["ASR_BACKEND"] = backends[self._asr_backend.currentIndex()]
 
         models = ["tiny", "base", "small"]
@@ -423,6 +429,7 @@ class SettingsDialog(QDialog):
         devices = ["cuda", "cpu", "auto"]
         env["WHISPER_DEVICE"] = devices[self._whisper_device.currentIndex()]
         env["WHISPER_MODEL_PATH"] = self._whisper_model_path.text().strip() or "models/faster-whisper-base"
+        env["SHERPA_MODEL_PATH"] = self._sherpa_model_path.text().strip() or "models/sherpa-streaming-zh-14M"
         env["SKIP_TRANSLATE_SAME_LANG"] = "true" if self._skip_translate_check.isChecked() else "false"
 
         write_env_file(env)
