@@ -241,8 +241,12 @@ class SubtitleWidget(QWidget):
     def _update_stream_subtitle(self, original: str, translation_chunk: str, is_final: bool):
         """流式更新字幕：逐步追加翻译内容"""
         self._update_display(original, translation_chunk)
-        if is_final and self._hide_delay_ms > 0:
-            self._hide_timer.start(self._hide_delay_ms)
+        # 非最终帧不启动隐藏定时器，避免翻译期间窗口被淡出（一闪一闪）
+        if self._hide_delay_ms > 0:
+            if is_final:
+                self._hide_timer.start(self._hide_delay_ms)
+            else:
+                self._hide_timer.stop()
 
     def apply_settings(self):
         """从配置重新加载显示设置"""

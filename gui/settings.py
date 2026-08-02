@@ -151,11 +151,23 @@ class SettingsDialog(QDialog):
         self._duration_spin.setSingleStep(1000)
         grid.addWidget(self._duration_spin, 3, 1)
 
+        self._check_permanent = QCheckBox(tr("permanent"))
+        self._check_permanent.toggled.connect(self._on_permanent_toggled)
+        grid.addWidget(self._check_permanent, 4, 0, 1, 2)
+
         self._check_stream = QCheckBox(tr("stream_translation"))
         self._check_stream.setChecked(True)
-        grid.addWidget(self._check_stream, 4, 0, 1, 2)
+        grid.addWidget(self._check_stream, 5, 0, 1, 2)
 
         return tab
+
+    def _on_permanent_toggled(self, checked: bool):
+        """勾选"常驻"时锁定时长为 0（不自动隐藏），取消时恢复编辑。"""
+        self._duration_spin.setEnabled(not checked)
+        if checked:
+            self._duration_spin.setValue(0)
+        elif self._duration_spin.value() == 0:
+            self._duration_spin.setValue(5000)
 
     def _build_audio_tab(self) -> QWidget:
         tab = QWidget()
@@ -362,6 +374,8 @@ class SettingsDialog(QDialog):
 
         dur = int(self._env.get("SUBTITLE_DURATION", "5000"))
         self._duration_spin.setValue(dur)
+        self._check_permanent.setChecked(dur == 0)
+        self._duration_spin.setEnabled(dur != 0)
 
         stream = self._env.get("STREAM_TRANSLATION", "true").lower() == "true"
         self._check_stream.setChecked(stream)
