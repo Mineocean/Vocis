@@ -1,13 +1,16 @@
 """Speaker diarization registry."""
 
 import logging
+from collections.abc import Callable
 
 from ..config import get_config
 from .base import Speaker, SpeakerDiarizer
 
 logger = logging.getLogger(__name__)
 
-_REGISTRY: dict[str, type[SpeakerDiarizer]] = {}
+# 注册表存"可调用工厂"而不是 type[...]：各后端构造函数都接受
+# max_speakers/threshold/min_seconds，但抽象基类本身没有这些参数。
+_REGISTRY: dict[str, Callable[..., SpeakerDiarizer]] = {}
 
 
 def register_diarizer(name: str):
