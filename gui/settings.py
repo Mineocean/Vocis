@@ -105,9 +105,22 @@ class SettingsDialog(QDialog):
         if 0 <= initial_tab < self._tabs.count():
             self._tabs.setCurrentIndex(initial_tab)
         self._connect_test_reset()
+
+    def showEvent(self, event):
+        # 只在对话框可见时监听焦点；避免应用退出时仍持有跨对象信号连接
         app = QApplication.instance()
         if isinstance(app, QApplication):
             app.focusChanged.connect(self._ensure_focus_visible)
+        super().showEvent(event)
+
+    def hideEvent(self, event):
+        app = QApplication.instance()
+        if isinstance(app, QApplication):
+            try:
+                app.focusChanged.disconnect(self._ensure_focus_visible)
+            except (RuntimeError, TypeError):
+                pass
+        super().hideEvent(event)
 
     def _ensure_focus_visible(self, _old, new):
         """键盘 Tab / setFocus 时让 QScrollArea 跟随滚动，避免在视口外盲输。"""

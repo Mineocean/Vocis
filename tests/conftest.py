@@ -44,3 +44,16 @@ def mock_config():
         cfg.audio_device = "auto"
         mock.return_value = cfg
         yield cfg
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """Close Qt cleanly before interpreter shutdown (offscreen CI can exit 1 otherwise)."""
+    try:
+        from PySide6.QtWidgets import QApplication
+
+        app = QApplication.instance()
+        if app is not None:
+            app.closeAllWindows()
+            app.quit()
+    except Exception:
+        pass
