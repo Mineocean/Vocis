@@ -195,9 +195,11 @@ class WasapiLoopbackCapture:
             self._is_float = fmt.wFormatTag == 3
             if fmt.wFormatTag == 0xFFFE:
                 ext = ctypes.cast(pMix, ctypes.POINTER(WAVEFORMATEXTENSIBLE)).contents
-                self._is_float = _guid_equal(ext.SubFormat, KSDATAFORMAT_SUBTYPE_IEEE_FLOAT)
-                if not self._is_float and not _guid_equal(ext.SubFormat, KSDATAFORMAT_SUBTYPE_PCM):
-                    logger.warning("未知混音格式子类型，按 PCM 处理")
+                # 用 Data1 判型（1 = PCM，3 = IEEE float），避免 GUID 字符串差异
+                subtype = int(ext.SubFormat.Data1)
+                self._is_float = subtype == 3
+                if subtype not in (1, 3):
+                    logger.warning("未知混音格式子类型 %d，按 PCM 处理", subtype)
             self._container_bytes = sample_bytes
             self._actual_bits = sample_bytes * 8
             logger.info(
@@ -235,9 +237,9 @@ class WasapiLoopbackCapture:
                 logger.error(f"Start 失败: 0x{hr:08X}")
                 return
 
-            logger.info("WASAPI Loopback 已启动 (%dHz, %dch, %s)",
+            logger.info("WASAPI Loopback 已启动 (%dHz, %dch, %s%d)",
                         self._actual_sr, self._actual_channels,
-                        "float32" if self._is_float else "int16")
+                        "float" if self._is_float else "pcm", self._container_bytes * 8)
 
             # 7. 捕获循环
             get_buf = _make_func(pCaptureClient, 3, ctypes.c_long,

@@ -586,6 +586,13 @@ class SubtitlePipeline:
     def _emit_stream(
         self, original: str, translation: str, is_final: bool, speaker: Speaker | None = None
     ):
+        if is_final:
+            logger.info(
+                "Subtitle final: [orig] %s [trans] %s [speaker] %s",
+                original[:120],
+                translation[:120],
+                speaker.id if speaker else "-",
+            )
         if self._on_subtitle_stream:
             try:
                 self._on_subtitle_stream(original, translation, is_final, speaker)
