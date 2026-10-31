@@ -125,6 +125,11 @@ QFrame#statusChip[state="paused"] {
     border: 1px solid rgba(251, 191, 36, 0.30);
 }
 
+QFrame#statusChip[state="idle"] {
+    background-color: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
 QFrame#statusChip QLabel {
     background: transparent;
 }
@@ -207,6 +212,11 @@ QPushButton#link:pressed {
     background-color: rgba(34, 211, 238, 0.14);
 }
 
+QPushButton#link:disabled {
+    color: #56616d;
+    background: transparent;
+}
+
 /* ── 输入控件 ──────────────────────────────────────── */
 
 QLineEdit,
@@ -216,11 +226,11 @@ QDoubleSpinBox {
     background-color: #0e141b;
     border: 1px solid rgba(255, 255, 255, 0.12);
     border-radius: 9px;
-    padding: 7px 10px;
+    padding: 6px 10px;
     color: #e6edf3;
     selection-background-color: #22d3ee;
     selection-color: #04141a;
-    min-height: 22px;
+    min-height: 20px;
 }
 
 QLineEdit:hover,
@@ -293,31 +303,31 @@ QComboBox QAbstractItemView::item:hover {
 
 QSpinBox,
 QDoubleSpinBox {
-    padding-right: 24px;
+    padding-right: 26px;
 }
 
 QSpinBox::up-button,
 QDoubleSpinBox::up-button {
     subcontrol-origin: border;
     subcontrol-position: top right;
-    width: 18px;
-    height: 13px;
-    margin: 2px 3px 0 0;
+    width: 20px;
+    height: 16px;
+    margin: 1px 1px 0 0;
     border: none;
-    border-top-right-radius: 7px;
-    background-color: rgba(255, 255, 255, 0.05);
+    border-left: 1px solid rgba(255, 255, 255, 0.08);
+    background: transparent;
 }
 
 QSpinBox::down-button,
 QDoubleSpinBox::down-button {
     subcontrol-origin: border;
     subcontrol-position: bottom right;
-    width: 18px;
-    height: 13px;
-    margin: 0 3px 2px 0;
+    width: 20px;
+    height: 16px;
+    margin: 0 1px 1px 0;
     border: none;
-    border-bottom-right-radius: 7px;
-    background-color: rgba(255, 255, 255, 0.05);
+    border-left: 1px solid rgba(255, 255, 255, 0.08);
+    background: transparent;
 }
 
 QSpinBox::up-button:hover,
@@ -329,22 +339,23 @@ QDoubleSpinBox::down-button:hover {
 
 QSpinBox::up-arrow,
 QDoubleSpinBox::up-arrow {
-    width: 7px;
-    height: 7px;
+    width: 6px;
+    height: 6px;
 }
 
 QSpinBox::down-arrow,
 QDoubleSpinBox::down-arrow {
-    width: 7px;
-    height: 7px;
+    width: 6px;
+    height: 6px;
 }
 
 /* ── 复选框 / 单选 ─────────────────────────────────── */
 
 QCheckBox {
+    background: transparent;
     color: #e6edf3;
-    spacing: 9px;
-    padding: 3px 2px;
+    spacing: 10px;
+    padding: 6px 8px;
 }
 
 QCheckBox::indicator {
@@ -365,9 +376,10 @@ QCheckBox::indicator:checked {
 }
 
 QRadioButton {
+    background: transparent;
     color: #e6edf3;
-    spacing: 9px;
-    padding: 3px 2px;
+    spacing: 10px;
+    padding: 6px 8px;
 }
 
 QRadioButton::indicator {
@@ -392,8 +404,13 @@ QRadioButton::indicator:checked {
 QTabWidget::pane {
     background-color: rgba(255, 255, 255, 0.015);
     border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 12px;
-    top: -1px;
+    border-top: none;
+    border-radius: 0 0 12px 12px;
+    top: 0;
+}
+
+QTabBar {
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
 }
 
 QTabBar::tab {
@@ -453,19 +470,19 @@ QScrollArea > QWidget > QWidget {
 
 QScrollBar:vertical {
     background: transparent;
-    width: 8px;
-    margin: 2px;
-    border-radius: 4px;
+    width: 10px;
+    margin: 2px 1px;
+    border-radius: 5px;
 }
 
 QScrollBar::handle:vertical {
-    background-color: rgba(255, 255, 255, 0.14);
-    border-radius: 4px;
+    background-color: rgba(255, 255, 255, 0.22);
+    border-radius: 5px;
     min-height: 32px;
 }
 
 QScrollBar::handle:vertical:hover {
-    background-color: rgba(255, 255, 255, 0.26);
+    background-color: rgba(255, 255, 255, 0.34);
 }
 
 QScrollBar::add-line:vertical,
@@ -568,6 +585,22 @@ QMessageBox QPushButton {
 QDialogButtonBox QPushButton {
     min-width: 92px;
     min-height: 20px;
+}
+
+QDialogButtonBox QPushButton#primary {
+    background-color: #22d3ee;
+    border: 1px solid #22d3ee;
+    color: #04141a;
+    font-weight: 600;
+}
+
+QDialogButtonBox QPushButton#primary:hover {
+    background-color: #67e8f9;
+    border-color: #67e8f9;
+}
+
+QPushButton#primary:focus {
+    border: 1px solid #a5f3fc;
 }
 
 /* ── 工具提示 ──────────────────────────────────────── */

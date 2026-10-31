@@ -5,9 +5,10 @@
 """
 
 import logging
+import time
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -16,6 +17,7 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QPushButton,
     QVBoxLayout,
     QWidget,
@@ -57,10 +59,12 @@ class MainWindow(QWidget):
 
         self._speaker_order: list[int] = []
         self._chips: dict[int, QLabel] = {}
+        # 最近一次字幕时间：30s 没有任何字幕时状态转为「等待音频」
+        self._last_subtitle_at = time.monotonic()
 
         self.setObjectName("mainWindow")
         self.setWindowTitle(tr("app_title"))
-        self.setFixedSize(430, 540)
+        self.setFixedSize(430, 580)
         self.setWindowFlags(Qt.WindowType.WindowStaysOnTopHint)
 
         icon_path = app_dir() / "assets" / "vocis_32.png"
@@ -68,6 +72,12 @@ class MainWindow(QWidget):
             self.setWindowIcon(QIcon(str(icon_path)))
 
         self._build_ui()
+        self._toggle_btn.setFocus()
+
+        self._status_timer = QTimer(self)
+        self._status_timer.setInterval(5000)
+        self._status_timer.timeout.connect(self.refresh_status)
+        self._status_timer.start()
 
         # 字幕信号同样用于维护说话人图例（Qt 信号可多路连接）
         if subtitle_widget is not None:
@@ -111,17 +121,21 @@ class MainWindow(QWidget):
         actions.setSpacing(8)
         self._settings_btn = QPushButton("")
         self._log_btn = QPushButton("")
-        self._quit_btn = QPushButton("")
-        for btn in (self._settings_btn, self._log_btn, self._quit_btn):
+        for btn in (self._settings_btn, self._log_btn):
             btn.setFixedHeight(36)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             actions.addWidget(btn, 1)
-        self._settings_btn.clicked.connect(self._open_settings)
+        self._settings_btn.clicked.connect(lambda: self._open_settings(0))
         self._log_btn.clicked.connect(self._open_log)
-        self._quit_btn.clicked.connect(self._quit)
         outer.addLayout(actions)
 
         footer = QHBoxLayout()
+        footer.setSpacing(8)
+        self._quit_btn = QPushButton("")
+        self._quit_btn.setObjectName("link")
+        self._quit_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._quit_btn.clicked.connect(self._quit)
+        footer.addWidget(self._quit_btn, 0)
         footer.addStretch(1)
         self._version_label = QLabel("")
         self._version_label.setObjectName("hint")
@@ -192,19 +206,28 @@ class MainWindow(QWidget):
         self._key_asr = QLabel("")
         self._key_speakers = QLabel("")
         self._key_lang = QLabel("")
-        for lbl in (self._key_translator, self._key_asr, self._key_speakers, self._key_lang):
+        self._key_target = QLabel("")
+        for lbl in (
+            self._key_translator,
+            self._key_asr,
+            self._key_speakers,
+            self._key_lang,
+            self._key_target,
+        ):
             lbl.setObjectName("keyLabel")
 
         self._val_translator = QLabel("")
         self._val_asr = QLabel("")
         self._val_speakers = QLabel("")
-        for lbl in (self._val_translator, self._val_asr, self._val_speakers):
+        self._val_target = QLabel("")
+        for lbl in (self._val_translator, self._val_asr, self._val_speakers, self._val_target):
             lbl.setObjectName("valueLabel")
             lbl.setFixedWidth(260)
 
         self._lang_combo = ThemedComboBox()
-        self._lang_combo.setFixedHeight(30)
+        self._lang_combo.setFixedHeight(34)
         self._lang_combo.setFixedWidth(260)
+        self._lang_combo.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
         for name in (tr("auto"), tr("chinese_zh"), tr("english_en"), tr("japanese_ja")):
             self._lang_combo.addItem(name)
         self._lang_combo.currentIndexChanged.connect(self._on_lang_changed)
@@ -217,6 +240,8 @@ class MainWindow(QWidget):
         grid.addWidget(self._val_speakers, 2, 1, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         grid.addWidget(self._key_lang, 3, 0, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         grid.addWidget(self._lang_combo, 3, 1, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        grid.addWidget(self._key_target, 4, 0, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        grid.addWidget(self._val_target, 4, 1, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         lay.addLayout(grid)
         return card
 
@@ -230,12 +255,17 @@ class MainWindow(QWidget):
         head = QHBoxLayout()
         self._speaker_title = QLabel("")
         self._speaker_title.setObjectName("sectionTitle")
+        self._enable_diar_btn = QPushButton("")
+        self._enable_diar_btn.setObjectName("link")
+        self._enable_diar_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._enable_diar_btn.clicked.connect(lambda: self._open_settings(2))
         self._reset_btn = QPushButton("")
         self._reset_btn.setObjectName("link")
         self._reset_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._reset_btn.clicked.connect(self._reset_speakers)
         head.addWidget(self._speaker_title)
         head.addStretch(1)
+        head.addWidget(self._enable_diar_btn)
         head.addWidget(self._reset_btn)
         lay.addLayout(head)
 
@@ -265,9 +295,11 @@ class MainWindow(QWidget):
         self._key_translator.setText(tr("info_translator"))
         self._key_asr.setText(tr("info_asr"))
         self._key_speakers.setText(tr("info_speakers"))
-        self._key_lang.setText(tr("tab_language"))
+        self._key_lang.setText(tr("info_source"))
+        self._key_target.setText(tr("info_target"))
         self._speaker_title.setText(tr("tab_diarization"))
-        self._reset_btn.setText(tr("reset"))
+        self._reset_btn.setText(tr("reset_speakers"))
+        self._enable_diar_btn.setText(tr("speaker_enable"))
         self._speaker_empty.setText(tr("speaker_empty"))
         self._speaker_hint.setText(tr("speaker_auto_hint"))
         self._settings_btn.setText(tr("settings"))
@@ -296,7 +328,12 @@ class MainWindow(QWidget):
     def refresh_status(self):
         """根据 pipeline / 配置刷新状态、当前配置与按钮文案。"""
         paused = bool(self.pipeline is not None and self.pipeline.is_paused)
-        self._set_status(paused)
+        idle = (
+            not paused
+            and self.pipeline is not None
+            and time.monotonic() - self._last_subtitle_at > 30.0
+        )
+        self._set_status(paused, idle)
 
         cfg = get_config()
         lang = current_language()
@@ -342,7 +379,23 @@ class MainWindow(QWidget):
         else:
             self._set_info(self._val_speakers, tr("speaker_off"))
 
-        self._reset_btn.setEnabled(bool(self._speaker_order))
+        self._set_info(self._val_target, cfg.translator.target_language or tr("not_set"))
+
+        enabled = cfg.diarization.enabled
+        self._enable_diar_btn.setVisible(not enabled)
+        self._reset_btn.setVisible(enabled)
+        for chip in self._chips.values():
+            chip.setVisible(enabled)
+        if enabled:
+            self._speaker_empty.setText(tr("speaker_empty"))
+            self._speaker_empty.setVisible(not self._speaker_order)
+            self._speaker_hint.setVisible(bool(self._speaker_order))
+            self._reset_btn.setEnabled(bool(self._speaker_order))
+        else:
+            self._speaker_empty.setText(tr("speaker_off_hint"))
+            self._speaker_empty.show()
+            self._speaker_hint.hide()
+            self._reset_btn.setEnabled(False)
 
     def sync_language(self):
         """从当前配置同步语言下拉框。"""
@@ -364,21 +417,27 @@ class MainWindow(QWidget):
             label.fontMetrics().elidedText(text, Qt.TextElideMode.ElideRight, label.width() or 260)
         )
 
-    def _set_status(self, paused: bool):
-        state = "paused" if paused else "running"
+    def _set_status(self, paused: bool, idle: bool = False):
+        state = "paused" if paused else ("idle" if idle else "running")
         if self._status_chip.property("state") != state:
             self._status_chip.setProperty("state", state)
             style = self._status_chip.style()
             style.unpolish(self._status_chip)
             style.polish(self._status_chip)
-        color = "#fbbf24" if paused else "#34d399"
+        color = {"running": "#34d399", "paused": "#fbbf24"}.get(state, "#8b98a5")
         self._status_dot.setStyleSheet(
             "background-color: %s; border-radius: 4px;" % color
         )
         glow = QColor(color)
         glow.setAlpha(170)
         self._dot_glow.setColor(glow)
-        self._status_label.setText(tr("paused") if paused else tr("running"))
+        if paused:
+            status_text = tr("paused")
+        elif idle:
+            status_text = tr("status_waiting")
+        else:
+            status_text = tr("running")
+        self._status_label.setText(status_text)
         self._status_label.setStyleSheet("color: %s;" % color)
         self._toggle_btn.setText(tr("resume") if paused else tr("pause"))
 
@@ -414,13 +473,29 @@ class MainWindow(QWidget):
         self._reset_btn.setEnabled(True)
         self.refresh_status()
 
+    def _mark_activity(self):
+        self._last_subtitle_at = time.monotonic()
+        if self._status_chip.property("state") == "idle":
+            self.refresh_status()
+
     def _on_subtitle(self, _original, _translation, speaker):
+        self._mark_activity()
         self._note_speaker(speaker)
 
     def _on_stream(self, _original, _translation, _is_final, speaker):
+        self._mark_activity()
         self._note_speaker(speaker)
 
     def _reset_speakers(self):
+        if not self._speaker_order:
+            return
+        answer = QMessageBox.question(
+            self,
+            tr("reset_speakers"),
+            tr("reset_confirm", n=len(self._speaker_order)),
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
         for chip in self._chips.values():
             self._chips_grid.removeWidget(chip)
             chip.deleteLater()
@@ -446,9 +521,9 @@ class MainWindow(QWidget):
             self.tray_manager._toggle()
         self.refresh_status()
 
-    def _open_settings(self):
+    def _open_settings(self, tab: int = 0):
         from gui.settings import SettingsDialog
-        dlg = SettingsDialog(self)
+        dlg = SettingsDialog(self, initial_tab=tab)
         if dlg.exec():
             if self.subtitle_widget:
                 self.subtitle_widget.apply_settings()
@@ -472,6 +547,9 @@ class MainWindow(QWidget):
                 subprocess.Popen(["xdg-open", str(log_path)])
 
     def _quit(self):
+        answer = QMessageBox.question(self, tr("quit"), tr("quit_confirm"))
+        if answer != QMessageBox.StandardButton.Yes:
+            return
         if self.tray_manager:
             self.tray_manager._quit()
         else:

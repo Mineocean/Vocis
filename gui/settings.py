@@ -9,7 +9,6 @@ import sounddevice as sd
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QApplication,
-    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -24,8 +23,8 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMessageBox,
     QPushButton,
-    QRadioButton,
     QScrollArea,
+    QSizePolicy,
     QStackedWidget,
     QTabWidget,
     QVBoxLayout,
@@ -44,7 +43,13 @@ from backend.config import (
 from backend.providers.presets import ASR_PRESETS, LOCAL_ASR_BACKENDS, TRANSLATION_PRESETS
 from backend.utils import normalize_api_url
 from gui.i18n import current_language, reload_language, tr
-from gui.widgets import ThemedComboBox, ThemedDoubleSpinBox, ThemedSpinBox
+from gui.widgets import (
+    ThemedCheckBox,
+    ThemedComboBox,
+    ThemedDoubleSpinBox,
+    ThemedRadioButton,
+    ThemedSpinBox,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -89,14 +94,44 @@ def _resolve(path: str) -> Path:
 class SettingsDialog(QDialog):
     """Vocis settings dialog."""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, initial_tab: int = 0):
         super().__init__(parent)
         self.setWindowTitle(tr("settings_title"))
-        self.resize(760, 620)
-        self.setMinimumSize(700, 540)
+        self.resize(760, 680)
+        self.setMinimumSize(700, 600)
         self._env = read_env_file()
         self._build_ui()
         self._load_values()
+        if 0 <= initial_tab < self._tabs.count():
+            self._tabs.setCurrentIndex(initial_tab)
+        self._connect_test_reset()
+        app = QApplication.instance()
+        if isinstance(app, QApplication):
+            app.focusChanged.connect(self._ensure_focus_visible)
+
+    def _ensure_focus_visible(self, _old, new):
+        """键盘 Tab / setFocus 时让 QScrollArea 跟随滚动，避免在视口外盲输。"""
+        if new is None:
+            return
+        for i in range(self._tabs.count()):
+            area = self._tabs.widget(i)
+            if isinstance(area, QScrollArea) and area.isAncestorOf(new):
+                area.ensureWidgetVisible(new, 0, 28)
+                return
+
+    def _connect_test_reset(self):
+        """改动输入后清掉上一次测试结果的红色/绿色残留。"""
+        for widget in (self._tr_key, self._tr_base):
+            widget.textChanged.connect(self._reset_test_state)
+        self._tr_model.currentTextChanged.connect(self._reset_test_state)
+        for widget in (self._asr_key, self._asr_base):
+            widget.textChanged.connect(self._reset_test_state)
+        self._asr_model.currentTextChanged.connect(self._reset_test_state)
+
+    def _reset_test_state(self, *_args):
+        for label in (self._tr_test_status, self._asr_test_status):
+            label.setText(tr("not_tested"))
+            label.setStyleSheet("")
 
     # ── 构建 ──────────────────────────────────────────
 
@@ -176,22 +211,12 @@ class SettingsDialog(QDialog):
         self._tr_model.lineEdit().setPlaceholderText(tr("enter_model"))
         form.addRow(_label(tr("model")), self._tr_model)
 
-        self._tr_temp = ThemedDoubleSpinBox()
-        self._tr_temp.setRange(0.0, 2.0)
-        self._tr_temp.setSingleStep(0.1)
-        self._tr_temp.setDecimals(2)
-        form.addRow(_label(tr("temperature")), self._tr_temp)
-
-        self._tr_max_tokens = ThemedSpinBox()
-        self._tr_max_tokens.setRange(16, 8192)
-        self._tr_max_tokens.setSingleStep(64)
-        form.addRow(_label(tr("max_tokens")), self._tr_max_tokens)
-
         lay.addWidget(group)
 
         test_row = QHBoxLayout()
         test_row.setSpacing(10)
         self._tr_test_btn = QPushButton(tr("test_connection"))
+        self._tr_test_btn.setAutoDefault(False)
         self._tr_test_btn.clicked.connect(self._test_translator)
         self._tr_test_status = _hint(tr("not_tested"))
         test_row.addWidget(self._tr_test_btn)
@@ -212,6 +237,19 @@ class SettingsDialog(QDialog):
         lang_form.addRow(_label(tr("target_language")), self._target_lang)
         lay.addWidget(lang_group)
 
+        adv_group = QGroupBox(tr("advanced"))
+        adv_form = self._form(adv_group)
+        self._tr_temp = ThemedDoubleSpinBox()
+        self._tr_temp.setRange(0.0, 2.0)
+        self._tr_temp.setSingleStep(0.1)
+        self._tr_temp.setDecimals(2)
+        adv_form.addRow(_label(tr("temperature")), self._tr_temp)
+        self._tr_max_tokens = ThemedSpinBox()
+        self._tr_max_tokens.setRange(16, 8192)
+        self._tr_max_tokens.setSingleStep(64)
+        adv_form.addRow(_label(tr("max_tokens")), self._tr_max_tokens)
+        lay.addWidget(adv_group)
+
         lay.addStretch(1)
         return page
 
@@ -222,8 +260,8 @@ class SettingsDialog(QDialog):
         mode_lay = QHBoxLayout(mode_group)
         mode_lay.setContentsMargins(14, 8, 14, 8)
         mode_lay.setSpacing(20)
-        self._asr_cloud_radio = QRadioButton(tr("asr_mode_cloud"))
-        self._asr_local_radio = QRadioButton(tr("asr_mode_local"))
+        self._asr_cloud_radio = ThemedRadioButton(tr("asr_mode_cloud"))
+        self._asr_local_radio = ThemedRadioButton(tr("asr_mode_local"))
         self._asr_cloud_radio.setChecked(True)
         self._asr_cloud_radio.toggled.connect(self._on_asr_mode_changed)
         mode_lay.addWidget(self._asr_cloud_radio)
@@ -236,7 +274,8 @@ class SettingsDialog(QDialog):
         self._asr_stack.addWidget(self._build_asr_local_page())
         lay.addWidget(self._asr_stack)
 
-        self._skip_translate = QCheckBox(tr("skip_translate_same_lang"))
+        self._skip_translate = ThemedCheckBox(tr("skip_translate_same_lang"))
+        self._skip_translate.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         lay.addWidget(self._skip_translate)
         lay.addStretch(1)
         return page
@@ -328,6 +367,7 @@ class SettingsDialog(QDialog):
         test_row = QHBoxLayout()
         test_row.setSpacing(10)
         self._local_test_btn = QPushButton(tr("test_connection"))
+        self._local_test_btn.setAutoDefault(False)
         self._local_test_btn.clicked.connect(self._test_local_asr)
         self._local_test_status = _hint(tr("not_tested"))
         test_row.addWidget(self._local_test_btn)
@@ -344,7 +384,8 @@ class SettingsDialog(QDialog):
     def _build_diarization_tab(self) -> QWidget:
         page, lay = self._tab_page()
 
-        self._diar_enabled = QCheckBox(tr("diarization_enabled"))
+        self._diar_enabled = ThemedCheckBox(tr("diarization_enabled"))
+        self._diar_enabled.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         lay.addWidget(self._diar_enabled)
 
         self._diar_group = QGroupBox(tr("tab_diarization"))
@@ -377,10 +418,18 @@ class SettingsDialog(QDialog):
         form.addRow(_label(tr("diarization_model_path")), self._path_row(self._diar_model))
 
         lay.addWidget(self._diar_group)
+        self._diar_down_hint = QLabel(tr("diar_down_hint"))
+        self._diar_down_hint.setWordWrap(True)
+        self._diar_down_hint.setStyleSheet("color: #fbbf24;")
+        lay.addWidget(self._diar_down_hint)
         lay.addWidget(_hint(tr("diarization_hint")))
         lay.addStretch(1)
-        self._diar_enabled.toggled.connect(self._diar_group.setEnabled)
+        self._diar_enabled.toggled.connect(self._on_diar_toggled)
         return page
+
+    def _on_diar_toggled(self, enabled: bool):
+        self._diar_group.setEnabled(enabled)
+        self._diar_down_hint.setVisible(enabled)
 
     def _build_display_tab(self) -> QWidget:
         page, lay = self._tab_page()
@@ -406,15 +455,13 @@ class SettingsDialog(QDialog):
         self._duration_spin.setSpecialValueText(tr("permanent"))
         form.addRow(_label(tr("subtitle_duration")), self._duration_spin)
 
-        self._check_permanent = QCheckBox(tr("permanent"))
-        self._check_permanent.toggled.connect(self._on_permanent_toggled)
-        form.addRow(_label(""), self._check_permanent)
-
-        self._check_stream = QCheckBox(tr("stream_translation"))
+        self._check_stream = ThemedCheckBox(tr("stream_translation"))
         form.addRow(_label(""), self._check_stream)
 
-        self._check_speaker_colors = QCheckBox(tr("speaker_colors"))
+        self._check_speaker_colors = ThemedCheckBox(tr("speaker_colors"))
         form.addRow(_label(""), self._check_speaker_colors)
+        for cb in (self._check_stream, self._check_speaker_colors):
+            cb.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
 
         lay.addWidget(group)
 
@@ -467,12 +514,19 @@ class SettingsDialog(QDialog):
             | QDialogButtonBox.StandardButton.Cancel
             | QDialogButtonBox.StandardButton.Apply
         )
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setObjectName("primary")
         buttons.button(QDialogButtonBox.StandardButton.Ok).setText(tr("save"))
         buttons.button(QDialogButtonBox.StandardButton.Cancel).setText(tr("cancel"))
         buttons.button(QDialogButtonBox.StandardButton.Apply).setText(tr("apply"))
         buttons.accepted.connect(self._save_and_close)
         buttons.rejected.connect(self.reject)
         buttons.button(QDialogButtonBox.StandardButton.Apply).clicked.connect(self._save)
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setDefault(True)
+        for button in buttons.buttons():
+            if isinstance(button, QPushButton) and button is not buttons.button(
+                QDialogButtonBox.StandardButton.Ok
+            ):
+                button.setAutoDefault(False)
         return buttons
 
     def _path_row(self, edit: QLineEdit) -> QWidget:
@@ -560,13 +614,6 @@ class SettingsDialog(QDialog):
         self._local_form.setRowVisible(3, whisper)
         self._local_form.setRowVisible(4, sherpa)
 
-    def _on_permanent_toggled(self, checked: bool):
-        self._duration_spin.setEnabled(not checked)
-        if checked:
-            self._duration_spin.setValue(0)
-        elif self._duration_spin.value() == 0:
-            self._duration_spin.setValue(5000)
-
     def _browse_dir(self, edit: QLineEdit):
         start = edit.text().strip() or str(app_dir())
         path = QFileDialog.getExistingDirectory(self, tr("browse"), start)
@@ -596,6 +643,7 @@ class SettingsDialog(QDialog):
                     self._device_list.addItem(item)
         except Exception as e:
             logger.warning("Failed to enumerate audio devices: %s", e)
+            self._device_info.setText(tr("audio_no_devices"))
         self._device_list.blockSignals(False)
         self._select_device(current_id)
 
@@ -670,12 +718,9 @@ class SettingsDialog(QDialog):
     def _on_test_done(self, button: QPushButton, label: QLabel, ok: bool, detail: str):
         button.setEnabled(True)
         button.setText(tr("test_connection"))
-        label.setText(detail)
+        label.setText(("\u2714 " if ok else "\u2716 ") + detail)
+        label.setToolTip(detail)
         label.setStyleSheet("color: %s;" % ("#34d399" if ok else "#fb7185"))
-        if ok:
-            QMessageBox.information(self, tr("test_ok"), detail)
-        else:
-            QMessageBox.warning(self, tr("test_fail"), detail)
 
     def _test_translator(self):
         key = self._tr_key.text().strip()
@@ -847,6 +892,7 @@ class SettingsDialog(QDialog):
         d = cfg.diarization
         self._diar_enabled.setChecked(d.enabled)
         self._diar_group.setEnabled(d.enabled)
+        self._diar_down_hint.setVisible(d.enabled)
         self._diar_backend.setCurrentIndex(0 if d.backend != "cluster" else 1)
         self._diar_max.setValue(int(d.max_speakers))
         if d.threshold:
@@ -860,8 +906,7 @@ class SettingsDialog(QDialog):
         disp = cfg.display
         self._font_size.setValue(int(disp.font_size))
         self._duration_spin.setValue(int(disp.subtitle_duration_ms))
-        self._check_permanent.setChecked(disp.subtitle_duration_ms == 0)
-        self._duration_spin.setEnabled(disp.subtitle_duration_ms != 0)
+        self._duration_spin.setEnabled(True)
         position = disp.subtitle_position if disp.subtitle_position in POSITIONS else "bottom"
         self._position_combo.setCurrentIndex(POSITIONS.index(position))
         self._check_stream.setChecked(disp.stream_translation)

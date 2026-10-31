@@ -3,7 +3,6 @@
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import (
-    QCheckBox,
     QDialog,
     QFormLayout,
     QGroupBox,
@@ -19,7 +18,7 @@ from PySide6.QtWidgets import (
 from backend.config import app_dir, read_env_file, write_env_file
 from backend.providers.presets import ASR_PRESETS, LOCAL_ASR_BACKENDS, TRANSLATION_PRESETS
 from gui.i18n import current_language, tr
-from gui.widgets import ThemedComboBox
+from gui.widgets import ThemedCheckBox, ThemedComboBox
 
 LOCAL_BACKENDS = ["whisper", "sherpa", "mock"]
 CLOUD_ASR = ["mimo", "openai", "groq", "siliconflow", "custom"]
@@ -81,9 +80,15 @@ class SetupWizard(QDialog):
         self._next_btn.setDefault(True)
         self._next_btn.clicked.connect(self._go_next)
         self._skip_btn = QPushButton(tr("wizard_skip"))
+        self._skip_btn.setObjectName("link")
+        self._skip_btn.setAutoDefault(False)
         self._skip_btn.clicked.connect(self._skip)
 
+        self._step_label = QLabel("")
+        self._step_label.setObjectName("hint")
+
         nav.addWidget(self._back_btn)
+        nav.addWidget(self._step_label)
         nav.addStretch(1)
         nav.addWidget(self._skip_btn)
         nav.addWidget(self._next_btn)
@@ -152,6 +157,13 @@ class SetupWizard(QDialog):
         self._key.setPlaceholderText(tr("enter_key"))
         form.addRow(_label(tr("api_key")), self._key)
 
+        self._key_err = QLabel("")
+        self._key_err.setStyleSheet("color: #fb7185;")
+        self._key_err.setWordWrap(True)
+        form.addRow(_label(""), self._key_err)
+        self._key_form = form
+        form.setRowVisible(2, False)
+
         self._base = QLineEdit()
         self._base.setPlaceholderText(tr("enter_base_url"))
         form.addRow(_label(tr("base_url")), self._base)
@@ -161,10 +173,19 @@ class SetupWizard(QDialog):
         self._model.setInsertPolicy(ThemedComboBox.InsertPolicy.NoInsert)
         form.addRow(_label(tr("model")), self._model)
 
+        self._target_lang = ThemedComboBox()
+        for value in ("中文", "English", "日本語"):
+            self._target_lang.addItem(value, value)
+        current = self._env.get("TARGET_LANGUAGE") or "中文"
+        index = self._target_lang.findData(current)
+        if index >= 0:
+            self._target_lang.setCurrentIndex(index)
+        form.addRow(_label(tr("wizard_target_language")), self._target_lang)
+
         layout.addWidget(group)
         layout.addWidget(_hint(tr("wizard_provider_hint")))
 
-        self._remember = QCheckBox(tr("wizard_remember"))
+        self._remember = ThemedCheckBox(tr("wizard_remember"))
         self._remember.setChecked(True)
         layout.addWidget(self._remember)
         layout.addStretch(1)
@@ -290,9 +311,9 @@ class SetupWizard(QDialog):
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(title)
 
-        info = _hint(tr("wizard_ready"))
-        info.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(info)
+        self._done_info = _hint(tr("wizard_ready"))
+        self._done_info.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self._done_info)
         layout.addStretch(1)
         return page
 
@@ -342,17 +363,43 @@ class SetupWizard(QDialog):
     def _update_nav(self):
         idx = self._stack.currentIndex()
         self._back_btn.setVisible(0 < idx < 3)
-        self._skip_btn.setVisible(idx < 3)
+        self._skip_btn.setVisible(1 <= idx < 3)
         self._next_btn.setText(tr("wizard_finish") if idx == 3 else tr("wizard_next"))
+        self._step_label.setVisible(1 <= idx <= 2)
+        if 1 <= idx <= 2:
+            self._step_label.setText(tr("wizard_step", n=idx, total=2))
+        self._next_btn.setDefault(True)
+        self._skip_btn.setAutoDefault(False)
+        if idx == 1:
+            self._key.setFocus()
+        elif idx in (0, 2, 3):
+            self._next_btn.setFocus()
 
     def _go_back(self):
         idx = self._stack.currentIndex()
         if idx > 0:
             self._stack.setCurrentIndex(idx - 1)
 
+    def _provider_requires_key(self) -> bool:
+        preset = TRANSLATION_PRESETS.get(self._provider.currentData(), {})
+        return bool(preset.get("requires_key", True))
+
     def _go_next(self):
         idx = self._stack.currentIndex()
-        if idx < 2:
+        if idx == 1:
+            name = _preset_name(
+                TRANSLATION_PRESETS.get(self._provider.currentData(), {}),
+                self._provider.currentData() or "",
+            )
+            if self._provider_requires_key() and not self._key.text().strip():
+                self._key_err.setText(tr("wizard_need_key", name=name))
+                self._key_form.setRowVisible(2, True)
+                self._key.setFocus()
+                return
+            self._key_form.setRowVisible(2, False)
+            self._save()
+            self._stack.setCurrentIndex(2)
+        elif idx < 2:
             self._stack.setCurrentIndex(idx + 1)
         elif idx == 2:
             self._save()
@@ -361,9 +408,19 @@ class SetupWizard(QDialog):
             self.accept()
 
     def _skip(self):
-        if self._stack.currentIndex() == 2:
+        idx = self._stack.currentIndex()
+        if idx == 1:
+            # 未填 Key 也能先开始，但不再谎报「已就绪」
+            configured = bool(self._key.text().strip())
+            if configured:
+                self._save()
+            self._done_info.setText(
+                tr("wizard_ready") if configured else tr("wizard_skipped_ready")
+            )
+            self._stack.setCurrentIndex(3)
+        elif idx == 2:
             self._save()
-        self.accept()
+            self._stack.setCurrentIndex(3)
 
     def _save(self):
         if not self._remember.isChecked():
@@ -374,7 +431,7 @@ class SetupWizard(QDialog):
         env["TRANSLATOR_API_KEY"] = self._key.text().strip()
         env["TRANSLATOR_BASE_URL"] = self._base.text().strip()
         env["TRANSLATOR_MODEL"] = self._model.currentText().strip()
-        env.setdefault("TARGET_LANGUAGE", "中文")
+        env["TARGET_LANGUAGE"] = self._target_lang.currentData() or "中文"
 
         mode = self._asr_mode.currentData()
         if mode == "local":

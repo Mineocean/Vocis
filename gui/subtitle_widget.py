@@ -87,6 +87,9 @@ class SubtitleWidget(QWidget):
         self._position = "bottom"
         self._screen_index = 0
         self._speaker_colors = True
+        self._font_px = 16
+        self._pill_px = 11
+        self._pill_h = self.PILL_H
 
         self._original = ""
         self._translation = ""
@@ -131,9 +134,9 @@ class SubtitleWidget(QWidget):
         lay.setSpacing(self.GAP)
 
         self._pill = QLabel("")
-        self._pill.setFont(_font(11, bold=True))
+        self._pill.setFont(_font(self._pill_px, bold=True))
         self._pill.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._pill.setFixedHeight(self.PILL_H)
+        self._pill.setFixedHeight(self._pill_h)
         self._pill.hide()
 
         pill_row = QHBoxLayout()
@@ -144,17 +147,17 @@ class SubtitleWidget(QWidget):
         lay.addLayout(pill_row)
 
         self._orig = QLabel("")
-        self._orig.setFont(_font(16, bold=True))
+        self._orig.setFont(_font(13))
         self._orig.setWordWrap(True)
         self._orig.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-        self._orig.setStyleSheet("background: transparent; color: #ffffff;")
+        self._orig.setStyleSheet("background: transparent; color: #94a3b8;")
         self._orig.hide()
 
         self._trans = QLabel("")
-        self._trans.setFont(_font(13))
+        self._trans.setFont(_font(16, bold=True))
         self._trans.setWordWrap(True)
         self._trans.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-        self._trans.setStyleSheet("background: transparent; color: #cbd5e1;")
+        self._trans.setStyleSheet("background: transparent; color: #ffffff;")
         self._trans.hide()
 
         lay.addWidget(self._orig)
@@ -166,8 +169,19 @@ class SubtitleWidget(QWidget):
         """从配置重新加载显示设置（字号 / 时长 / 位置 / 屏幕 / 说话人配色）。"""
         cfg = get_config()
         fs = max(10, min(48, int(cfg.display.font_size)))
-        self._orig.setFont(_font(fs, bold=True))
-        self._trans.setFont(_font(max(9, fs - 3)))
+        self._font_px = fs
+        secondary = max(9, fs - 3)
+        self._orig.setFont(_font(secondary))
+        self._trans.setFont(_font(fs, bold=True))
+        # 应用级 QSS 的 QWidget{font-size:13px} 会覆盖 setFont，所以 label 内联字号
+        self._orig.setStyleSheet(
+            "background: transparent; color: #94a3b8; font-size: %dpx;" % secondary
+        )
+        self._trans.setStyleSheet(
+            "background: transparent; color: #ffffff; font-size: %dpx; font-weight: 700;" % fs
+        )
+        self._pill_px = max(11, fs - 6)
+        self._pill_h = max(self.PILL_H, self._pill_px + 10)
         self._hide_delay_ms = max(0, int(cfg.display.subtitle_duration_ms))
 
         position = str(cfg.display.subtitle_position or "bottom").lower()
@@ -250,7 +264,7 @@ class SubtitleWidget(QWidget):
         if has_trans:
             content_h += self.GAP + h_t
         if has_pill:
-            content_h += self.PILL_H + self.GAP
+            content_h += self._pill_h + self.GAP
         h = max(self.MIN_H, content_h + 2 * self.SHADOW)
 
         # 标签固定宽高，保证窗口高度与文本布局完全一致
@@ -294,12 +308,17 @@ class SubtitleWidget(QWidget):
             bg = "rgba(255, 255, 255, 0.16)"
             fg = "#e6edf3"
         text = tr("speaker_n", n=index)
+        self._pill.setFont(_font(self._pill_px, bold=True))
+        self._pill.setFixedHeight(self._pill_h)
         self._pill.setStyleSheet(
-            "background-color: %s; color: %s; border-radius: 9px; "
-            "padding: 1px 9px; font-size: 11px; font-weight: 600;" % (bg, fg)
+            "background-color: %s; color: %s; border-radius: %dpx; "
+            "padding: 1px 9px; font-size: %dpx; font-weight: 700;"
+            % (bg, fg, max(9, self._pill_h // 2), self._pill_px)
         )
         self._pill.setText(text)
-        self._pill.setFixedWidth(QFontMetrics(self._pill.font()).horizontalAdvance(text) + 22)
+        self._pill.setFixedWidth(
+            QFontMetrics(_font(self._pill_px, bold=True)).horizontalAdvance(text) + 22
+        )
         self._pill.show()
 
     # ── 显示 / 淡入淡出 ───────────────────────────────

@@ -51,6 +51,17 @@ def test_overlay_renders_speaker_and_texts(overlay):
     assert tr("speaker_n", n=2) in overlay._pill.text()
 
 
+def test_overlay_uses_translation_as_primary_text(overlay):
+    overlay.apply_settings()
+    overlay.show_subtitle("原文", "Translation", Speaker(1))
+    assert overlay._trans.font().pixelSize() > overlay._orig.font().pixelSize()
+    # 字号真的生效（QSS 全局 13px 不应覆盖 label 内联字号）
+    overlay._orig.setStyleSheet("background: transparent; font-size: 13px;")
+    config = __import__("backend.config", fromlist=["get_config"]).get_config()
+    if int(config.display.font_size) != 13:
+        assert overlay._trans.font().pixelSize() == int(config.display.font_size)
+
+
 def test_overlay_hides_pill_without_speaker(overlay):
     overlay.show_subtitle("只有原文", "", None)
     assert overlay._speaker is None
@@ -81,12 +92,15 @@ def test_main_window_constructs_and_tracks_speakers(qapp):
         assert set(window._chips) == {1, 2}
         window.retranslate()
         window.refresh_status()
+        assert window._val_target.text()  # 主窗口能看到「翻成什么」
+        assert window._enable_diar_btn is not None
     finally:
         window.close()
 
 
 def test_settings_dialog_constructs(qapp):
     from gui.settings import SettingsDialog
+    from gui.widgets import ThemedCheckBox
 
     dialog = SettingsDialog()
     try:
@@ -95,5 +109,33 @@ def test_settings_dialog_constructs(qapp):
         assert "custom" in providers
         assert dialog._diar_backend.count() == 2
         assert dialog._tr_model.currentText()
+        assert isinstance(dialog._check_stream, ThemedCheckBox)
     finally:
         dialog.close()
+
+
+def test_settings_dialog_opens_requested_tab(qapp):
+    from gui.settings import SettingsDialog
+
+    dialog = SettingsDialog(initial_tab=2)
+    try:
+        assert dialog._tabs.currentIndex() == 2
+    finally:
+        dialog.close()
+
+
+def test_wizard_blocks_empty_key(qapp):
+    from gui.setup_wizard import SetupWizard
+
+    wizard = SetupWizard()
+    try:
+        wizard._stack.setCurrentIndex(1)
+        wizard._provider.setCurrentIndex(
+            [wizard._provider.itemData(i) for i in range(wizard._provider.count())].index("deepseek")
+        )
+        wizard._key.clear()
+        wizard._go_next()
+        assert wizard._stack.currentIndex() == 1
+        assert not wizard._key_err.isHidden()
+    finally:
+        wizard.close()
