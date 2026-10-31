@@ -30,6 +30,14 @@ watching foreign content, attending international meetings, or learning language
   draggable/resizable, always-on-top
 - **System tray** — hotkeys for pause/resume and language switching
 
+## Screenshots
+
+![main-window](docs/screenshots/main-window.png)
+![settings-translator](docs/screenshots/settings-translator.png)
+![settings-speech](docs/screenshots/settings-speech.png)
+![settings-speakers](docs/screenshots/settings-speakers.png)
+![subtitle-overlay](docs/screenshots/subtitle-overlay.png)
+
 ## Download
 
 Download the latest Vocis.exe from

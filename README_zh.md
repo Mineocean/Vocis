@@ -20,6 +20,14 @@ Vocis 实时捕获系统音频（YouTube、会议、游戏），识别语音、�
 - **现代化悬浮字幕** — 深色玻璃卡片、说话人彩色胶囊、淡入淡出、可拖拽/缩放、始终置顶
 - **系统托盘** — 最小化到托盘，热键暂停/恢复、切换语言
 
+## 界面预览
+
+![main-window](docs/screenshots/main-window.png)
+![settings-translator](docs/screenshots/settings-translator.png)
+![settings-speech](docs/screenshots/settings-speech.png)
+![settings-speakers](docs/screenshots/settings-speakers.png)
+![subtitle-overlay](docs/screenshots/subtitle-overlay.png)
+
 ## 下载
 
 从 [GitHub Releases](https://github.com/Mineocean/Vocis/releases) 下载最新的 Vocis.exe。
