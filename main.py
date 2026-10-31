@@ -43,13 +43,10 @@ logger = logging.getLogger("vocis")
 
 
 def _needs_setup() -> bool:
-    """Check if first-run setup is needed."""
-    env = env_path()
-    if not env.exists():
-        return True
-    from backend.config import read_env_file
-    cfg = read_env_file()
-    return not cfg.get("MIMO_API_KEY") and not cfg.get("DEEPSEEK_API_KEY")
+    """首次运行是否需要配置向导（翻译是核心功能，缺 Key 就需要）。"""
+    from backend.config import get_config
+
+    return get_config().needs_setup()
 
 
 def main():
@@ -113,7 +110,7 @@ def main():
         from importlib.metadata import version as pkg_version
         current_ver = pkg_version("vocis")
     except Exception:
-        current_ver = "0.4.0-alpha"
+        current_ver = "0.5.0"
     check_update_async(current_ver, _on_update)
 
     # Keep event loop alive

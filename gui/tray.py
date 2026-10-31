@@ -16,6 +16,7 @@ from PySide6.QtGui import QAction, QColor, QFont, QIcon, QPainter
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
 from gui.i18n import tr
+from gui.theme import ACCENT
 
 if TYPE_CHECKING:
     from backend.pipeline import SubtitlePipeline
@@ -84,7 +85,7 @@ class TrayManager:
         # 注意：menu 与各 action 必须保存为实例属性，否则 PySide6 的 Python
         # 包装对象会被垃圾回收，导致右键菜单项消失。
         self._menu = QMenu()
-        self._status_action = QAction("● " + tr("running"))
+        self._status_action = QAction(tr("status_running"))
         self._status_action.setEnabled(False)
         self._menu.addAction(self._status_action)
         self._menu.addSeparator()
@@ -110,7 +111,7 @@ class TrayManager:
     def retranslate(self):
         """语言切换后刷新菜单文案。"""
         self.tray.setToolTip(tr("tray_tooltip"))
-        self._status_action.setText("● " + tr("running"))
+        self._refresh_status_action()
         self._toggle_action.setText(
             tr("resume") if self.pipeline and self.pipeline.is_paused else tr("pause")
         )
@@ -120,6 +121,12 @@ class TrayManager:
         self._quit_action.setText(tr("quit"))
         if self.main_window:
             self.main_window.retranslate()
+
+    def _refresh_status_action(self):
+        if self._status_action is None:
+            return
+        paused = bool(self.pipeline and self.pipeline.is_paused)
+        self._status_action.setText(tr("status_paused") if paused else tr("status_running"))
 
     def _on_activated(self, reason):
         """双击左键显示主面板（右键菜单由 setContextMenu 自动处理）。"""
@@ -146,10 +153,10 @@ class TrayManager:
         pm = QPixmap(32, 32)
         pm.fill(Qt.GlobalColor.transparent)
         pt = QPainter(pm)
-        pt.setBrush(QColor("#18181b"))
+        pt.setBrush(QColor("#121820"))
         pt.setPen(Qt.PenStyle.NoPen)
         pt.drawRoundedRect(4, 4, 24, 24, 6, 6)
-        pt.setPen(QColor("#059669"))
+        pt.setPen(QColor(ACCENT))
         pt.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
         pt.drawText(pm.rect(), Qt.AlignmentFlag.AlignCenter, "V")
         pt.end()
@@ -162,6 +169,7 @@ class TrayManager:
         elif self.pipeline:
             self.pipeline.pause()
             self._toggle_action.setText(tr("resume"))
+        self._refresh_status_action()
         self._refresh_main_status()
 
     def _do_toggle(self):
@@ -174,6 +182,7 @@ class TrayManager:
         else:
             self.pipeline.pause()
             self._toggle_action.setText(tr("resume"))
+        self._refresh_status_action()
         self._refresh_main_status()
 
     def _refresh_main_status(self):
@@ -204,6 +213,9 @@ class TrayManager:
                 self.subtitle_widget.apply_settings()
             if self.pipeline:
                 self.pipeline.apply_config()
+            if self.main_window:
+                self.main_window.sync_language()
+                self.main_window.refresh_status()
             self.retranslate()
 
     def _open_log(self):

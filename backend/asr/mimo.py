@@ -2,29 +2,19 @@
 
 import asyncio
 import base64
-import io
 import logging
-import wave
 
 import httpx
 
 from ..config import get_config
 from ..utils import normalize_api_url
+from .audio import pcm_to_wav
 from .base import ASREngine, ASRResult
 from .registry import register_asr
 
 logger = logging.getLogger(__name__)
 
-
-def pcm_to_wav(pcm_data: bytes, sample_rate: int = 16000, channels: int = 1, bits: int = 16) -> bytes:
-    """Wrap raw PCM data in WAV format."""
-    buf = io.BytesIO()
-    with wave.open(buf, "wb") as wf:
-        wf.setnchannels(channels)
-        wf.setsampwidth(bits // 8)
-        wf.setframerate(sample_rate)
-        wf.writeframes(pcm_data)
-    return buf.getvalue()
+__all__ = ["MiMoASR", "pcm_to_wav"]
 
 
 @register_asr("mimo")

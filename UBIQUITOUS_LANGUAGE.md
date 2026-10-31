@@ -44,17 +44,36 @@
 | **Hotkey** | 全局热键，Ctrl+Shift+S 启停，Ctrl+Shift+L 切语言 | 快捷键、热键 |
 | **Tray** | 系统托盘图标及右键菜单 | 托盘、系统托盘 |
 
+## 说话人
+
+| Term | Definition | Aliases to avoid |
+| --- | --- | --- |
+| **Diarization** | 说话人分离：判断每段语音"是谁在说"，给字幕打说话人标签 | 说话人识别、声纹识别 |
+| **Speaker** | 会话内稳定的说话人身份（index 从 1 开始，id 形如 S1，color_index 0-5） | 说话人、speaker id |
+| **Speaker Embedding** | 一段语音的说话人特征向量（sherpa 后端为 CAM++ 192 维） | 声纹向量、speaker vector |
+| **Speaker Cluster** | 在线聚类的说话人质心；相似度超过阈值即归入该说话人 | 聚类中心、centroid |
+| **Speaker Segment** | 一个 VAD 语音段对应的说话人判定；短段沿用上一位说话人 | 说话人段 |
+
+## 提供商
+
+| Term | Definition | Aliases to avoid |
+| --- | --- | --- |
+| **Provider** | 翻译服务的提供商（deepseek/openai/moonshot/qwen/zhipu/groq/siliconflow/ollama/custom） | 翻译后端、厂商 |
+| **Provider Preset** | 提供商的默认 Base URL、模型列表与专有请求字段，集中在 backend/providers/presets.py | 预设、provider 配置 |
+| **OpenAI-compatible** | 采用 /chat/completions 或 /audio/transcriptions 协议的端点，用一个客户端即可覆盖 | 兼容接口 |
+
 ## 配置
 
 | Term | Definition | Aliases to avoid |
 | --- | --- | --- |
 | **Config** | 应用配置单例，从 .env 文件和环境变量加载 | 配置、设置 |
-| **API Key** | 调用云端服务的认证密钥（MiMo/DeepSeek） | 密钥、api key |
-| **Backend** | ASR 引擎类型（mimo/whisper/mock） | 后端、asr backend |
+| **API Key** | 调用云端服务的认证密钥（按提供商/后端各自配置，旧版 DEEPSEEK_*/MIMO_* 仍兼容） | 密钥、api key |
+| **Backend** | ASR 引擎或说话人分离引擎的类型（whisper/sherpa/mimo/openai/...；sherpa/cluster） | 后端、asr backend |
 
 ## Relationships
 
-- **Pipeline** 包含 **AudioCapture** → **VAD** → **ASR** → **Translator** → **Overlay**
+- **Pipeline** 包含 **AudioCapture** → **VAD** → **ASR** / **Speaker Diarization** → **Translator** → **Overlay**
+- **Diarization** 为每个 **Speech Segment** 产出 **Speaker**，**Subtitle** 因此带上说话人标签
 - **VAD** 将 **AudioChunk** 切分为多个 **Speech Segment**
 - **ASR** 将 **Speech Segment** 转为 **Transcription**
 - **Translator** 将 **Transcription** 转为 **Translation**，可携带 **Context**

@@ -1,6 +1,8 @@
 """v0.4 本地 ASR：三元组契约与配置默认值测试。"""
 
 import asyncio
+import tempfile
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -63,12 +65,13 @@ def test_mimo_asr_returns_no_lang_tuple(MockClient, mock_cfg):
 
 
 @patch("backend.asr.whisper.get_config")
-def test_whisper_returns_tuple_with_language(mock_cfg, tmp_path):
+def test_whisper_returns_tuple_with_language(mock_cfg):
+    model_dir = Path(tempfile.gettempdir())
     cfg = MagicMock(
         asr=MagicMock(
             whisper_model="base",
             whisper_device="cpu",
-            whisper_model_path=str(tmp_path),
+            whisper_model_path=str(model_dir),
         )
     )
     mock_cfg.return_value = cfg
@@ -81,7 +84,7 @@ def test_whisper_returns_tuple_with_language(mock_cfg, tmp_path):
     asr._model = mock_model
     result = asr.transcribe(b"\x00" * 3200)
     assert result == ("你好", "zh", 0.99)
-    assert asr._model_path == str(tmp_path).replace("\\", "/")
+    assert asr._model_path == str(model_dir).replace("\\", "/")
 
 
 @patch("backend.pipeline.get_config")
@@ -125,17 +128,18 @@ def test_whisper_raises_when_model_missing():
 
 
 @patch("backend.asr.whisper.get_config")
-def test_whisper_accepts_existing_path(mock_cfg, tmp_path):
+def test_whisper_accepts_existing_path(mock_cfg):
+    model_dir = Path(tempfile.gettempdir())
     cfg = MagicMock(
         asr=MagicMock(
             whisper_model="base",
             whisper_device="cpu",
-            whisper_model_path=str(tmp_path),
+            whisper_model_path=str(model_dir),
         )
     )
     mock_cfg.return_value = cfg
     asr = WhisperASR()
-    assert asr._model_path == str(tmp_path).replace("\\", "/")
+    assert asr._model_path == str(model_dir).replace("\\", "/")
     assert asr._device == "cpu"
 
 
@@ -159,4 +163,3 @@ def test_create_asr_falls_back_to_mimo(mock_cfg, mock_whisper_cfg):
 
         engine = create_asr()
     assert engine == "mimo-engine"
-

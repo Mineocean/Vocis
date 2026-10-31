@@ -8,14 +8,19 @@ logger = logging.getLogger(__name__)
 
 
 def normalize_api_url(base: str) -> str:
-    """Normalize API URL to end with /v1."""
-    base = base.rstrip("/")
-    if not base.endswith("/v1"):
-        if "/v1/" in base or "/v1" in base:
-            idx = base.index("/v1")
-            base = base[:idx + 3]
-        else:
-            base += "/v1"
+    """规范化 API 根地址。
+
+    只有路径为空时才补 /v1；已经带有路径（/v1、/compatible-mode/v1、
+    /api/paas/v4 等）的地址原样保留，避免把智谱 v4、DashScope 兼容模式
+    这类厂商路径改坏。
+    """
+    base = (base or "").strip().rstrip("/")
+    if not base:
+        return base
+    from urllib.parse import urlsplit
+
+    if not urlsplit(base).path.strip("/"):
+        return base + "/v1"
     return base
 
 
@@ -28,18 +33,9 @@ def create_http_client(
     async_client: bool = False,
 ) -> httpx.Client | httpx.AsyncClient:
     """Create httpx client instance (sync or async)."""
-    headers = {
-        auth_header: f"{auth_prefix}{api_key}",
-        "Content-Type": "application/json",
-    }
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers[auth_header] = f"{auth_prefix}{api_key}"
     if async_client:
-        return httpx.AsyncClient(
-            base_url=base_url,
-            headers=headers,
-            timeout=timeout,
-        )
-    return httpx.Client(
-        base_url=base_url,
-        headers=headers,
-        timeout=timeout,
-    )
+        return httpx.AsyncClient(base_url=base_url, headers=headers, timeout=timeout)
+    return httpx.Client(base_url=base_url, headers=headers, timeout=timeout)
