@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from backend.config import app_dir, read_env_file, write_env_file
+from backend.config import read_env_file, resource_dir, write_env_file
 from backend.providers.presets import ASR_PRESETS, LOCAL_ASR_BACKENDS, TRANSLATION_PRESETS
 from gui.i18n import current_language, tr
 from gui.widgets import ThemedCheckBox, ThemedComboBox
@@ -54,7 +54,7 @@ class SetupWizard(QDialog):
         self._env = read_env_file()
         self._build_ui()
 
-        icon_path = app_dir() / "assets" / "vocis_32.png"
+        icon_path = resource_dir() / "assets" / "vocis_32.png"
         if icon_path.exists():
             self.setWindowIcon(QIcon(str(icon_path)))
 
@@ -108,7 +108,7 @@ class SetupWizard(QDialog):
 
         logo = QLabel()
         logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        logo_path = app_dir() / "assets" / "vocis_128.png"
+        logo_path = resource_dir() / "assets" / "vocis_128.png"
         if logo_path.exists():
             pm = QPixmap(str(logo_path)).scaled(
                 88, 88, Qt.AspectRatioMode.KeepAspectRatio,

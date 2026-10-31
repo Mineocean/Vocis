@@ -53,6 +53,29 @@ class WAVEFORMATEX(ctypes.Structure):
     ]
 
 
+class WAVEFORMATEXTENSIBLE(ctypes.Structure):
+    _fields_ = [
+        ("Format", WAVEFORMATEX),
+        ("Samples", wintypes.WORD),
+        ("dwChannelMask", wintypes.DWORD),
+        ("SubFormat", GUID),
+    ]
+
+
+KSDATAFORMAT_SUBTYPE_PCM = "{00000001-0000-0010-8000-00AA00389B71}"
+KSDATAFORMAT_SUBTYPE_IEEE_FLOAT = "{00000003-0000-0010-8000-00AA00389B71}"
+
+
+def _guid_equal(guid: GUID, text: str) -> bool:
+    ref = guid_from_str(text)
+    return (
+        guid.Data1 == ref.Data1
+        and guid.Data2 == ref.Data2
+        and guid.Data3 == ref.Data3
+        and bytes(guid.Data4) == bytes(ref.Data4)
+    )
+
+
 # ── WASAPI 常量 ───────────────────────────────────────
 
 AUDCLNT_SHAREMODE_SHARED = 0
@@ -155,40 +178,44 @@ class WasapiLoopbackCapture:
                 logger.error(f"Activate IAudioClient 失败: 0x{hr:08X}")
                 return
 
-            # 4. Initialize (vtable[3])
-            wfx = WAVEFORMATEX()
-            wfx.wFormatTag = 1   # PCM
-            wfx.nChannels = 2
-            wfx.nSamplesPerSec = 48000
-            wfx.wBitsPerSample = 16
-            wfx.nBlockAlign = wfx.nChannels * wfx.wBitsPerSample // 8
-            wfx.nAvgBytesPerSec = wfx.nSamplesPerSec * wfx.nBlockAlign
-            wfx.cbSize = 0
+            # 4. GetMixFormat (vtable[8])：共享模式必须使用设备混音格式，
+            #    硬编码 48k/16bit 会得到 AUDCLNT_E_UNSUPPORTED_FORMAT。
+            get_mix = _make_func(pAudioClient, 8, ctypes.c_long,
+                                 ctypes.POINTER(ctypes.POINTER(WAVEFORMATEX)))
+            pMix = ctypes.POINTER(WAVEFORMATEX)()
+            hr = get_mix(pAudioClient, ctypes.byref(pMix))
+            if hr != 0 or not pMix:
+                logger.error(f"GetMixFormat 失败: 0x{hr:08X}")
+                return
+
+            fmt = pMix.contents
+            self._actual_sr = int(fmt.nSamplesPerSec)
+            self._actual_channels = max(1, int(fmt.nChannels))
+            sample_bytes = max(1, int(fmt.nBlockAlign) // self._actual_channels)
+            self._is_float = fmt.wFormatTag == 3
+            if fmt.wFormatTag == 0xFFFE:
+                ext = ctypes.cast(pMix, ctypes.POINTER(WAVEFORMATEXTENSIBLE)).contents
+                self._is_float = _guid_equal(ext.SubFormat, KSDATAFORMAT_SUBTYPE_IEEE_FLOAT)
+                if not self._is_float and not _guid_equal(ext.SubFormat, KSDATAFORMAT_SUBTYPE_PCM):
+                    logger.warning("未知混音格式子类型，按 PCM 处理")
+            self._container_bytes = sample_bytes
+            self._actual_bits = sample_bytes * 8
+            logger.info(
+                "设备混音格式: %dHz, %dch, %d-bit %s",
+                self._actual_sr, self._actual_channels, self._actual_bits,
+                "float" if self._is_float else "pcm",
+            )
 
             init = _make_func(pAudioClient, 3, ctypes.c_long,
                               ctypes.c_int, ctypes.c_uint, ctypes.c_longlong,
                               ctypes.c_longlong, ctypes.POINTER(WAVEFORMATEX),
                               ctypes.c_void_p)
             hr = init(pAudioClient, AUDCLNT_SHAREMODE_SHARED,
-                      AUDCLNT_STREAMFLAGS_LOOPBACK, 0, 0,
-                      ctypes.byref(wfx), None)
+                      AUDCLNT_STREAMFLAGS_LOOPBACK, 0, 0, pMix, None)
+            ole32.CoTaskMemFree(pMix)
             if hr != 0:
-                # 降级尝试 float 格式
-                wfx.wFormatTag = 3
-                wfx.wBitsPerSample = 32
-                wfx.nBlockAlign = wfx.nChannels * wfx.wBitsPerSample // 8
-                wfx.nAvgBytesPerSec = wfx.nSamplesPerSec * wfx.nBlockAlign
-                hr = init(pAudioClient, AUDCLNT_SHAREMODE_SHARED,
-                          AUDCLNT_STREAMFLAGS_LOOPBACK, 0, 0,
-                          ctypes.byref(wfx), None)
-                if hr != 0:
-                    logger.error(f"Initialize 失败: 0x{hr:08X}")
-                    return
-                self._is_float = True
-
-            self._actual_sr = wfx.nSamplesPerSec
-            self._actual_channels = wfx.nChannels
-            self._actual_bits = wfx.wBitsPerSample
+                logger.error(f"Initialize 失败: 0x{hr:08X}")
+                return
 
             # 5. GetService IAudioCaptureClient (vtable[14])
             iid_cc = guid_from_str(IID_IAudioCaptureClient)
@@ -222,7 +249,8 @@ class WasapiLoopbackCapture:
             release_buf = _make_func(pCaptureClient, 4, ctypes.c_long, wintypes.UINT)
 
             accumulated = bytearray()
-            target_bytes = int(self._actual_sr * self._actual_channels * self._actual_bits // 8 * 0.1)
+            frame_bytes = self._actual_channels * self._container_bytes
+            target_bytes = int(self._actual_sr * 0.1) * frame_bytes
 
             while self._running.is_set():
                 try:
@@ -234,7 +262,6 @@ class WasapiLoopbackCapture:
                                  None, None)
 
                     if hr == 0 and num_frames.value > 0:
-                        frame_bytes = self._actual_channels * self._actual_bits // 8
                         data_len = num_frames.value * frame_bytes
                         data = ctypes.string_at(buf_ptr, data_len)
                         accumulated.extend(data)
@@ -266,24 +293,41 @@ class WasapiLoopbackCapture:
             ole32.CoUninitialize()
 
     def _convert(self, raw: bytes) -> np.ndarray | None:
-        """Stereo 48kHz → Mono 16kHz float32 using scipy resample_poly."""
+        """Device mix format → mono 16kHz float32 (scipy resample_poly)."""
         try:
             from scipy.signal import resample_poly
 
-            dtype = np.float32 if self._is_float else np.int16
-            audio = np.frombuffer(raw, dtype=dtype)
+            width = getattr(self, "_container_bytes", 2)
+            count = len(raw) // width
+            if count <= 0:
+                return None
+            if self._is_float:
+                if width == 4:
+                    audio = np.frombuffer(raw, dtype=np.float32, count=count)
+                elif width == 8:
+                    audio = np.frombuffer(raw, dtype=np.float64, count=count).astype(np.float32)
+                else:
+                    return None
+            elif width == 2:
+                audio = np.frombuffer(raw, dtype=np.int16, count=count).astype(np.float32) / 32768.0
+            elif width == 3:
+                b = np.frombuffer(raw, dtype=np.uint8, count=count * 3).reshape(-1, 3).astype(np.int32)
+                v = b[:, 0] | (b[:, 1] << 8) | (b[:, 2] << 16)
+                v = np.where(v >= (1 << 23), v - (1 << 24), v)
+                audio = v.astype(np.float32) / float(1 << 23)
+            elif width == 4:
+                audio = np.frombuffer(raw, dtype=np.int32, count=count).astype(np.float32) / float(1 << 31)
+            else:
+                return None
 
-            if self._actual_channels == 2:
-                audio = audio.reshape(-1, 2).mean(axis=1)
-
-            if not self._is_float:
-                audio = audio.astype(np.float32) / 32768.0
+            if self._actual_channels > 1:
+                audio = audio.reshape(-1, self._actual_channels).mean(axis=1)
 
             if self._actual_sr != self.sample_rate:
                 from math import gcd
-                g = gcd(self._actual_sr, self.sample_rate)
+                g = gcd(int(self._actual_sr), self.sample_rate)
                 up = self.sample_rate // g
-                down = self._actual_sr // g
+                down = int(self._actual_sr) // g
                 audio = resample_poly(audio, up, down).astype(np.float32)
 
             return audio.astype(np.float32)

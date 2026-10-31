@@ -144,8 +144,8 @@ class TrayManager:
             self.main_window.activateWindow()
 
     def _load_icon(self) -> QIcon:
-        from backend.config import app_dir
-        p = app_dir() / "assets" / "vocis_tray_32.png"
+        from backend.config import resource_dir
+        p = resource_dir() / "assets" / "vocis_tray_32.png"
         if p.exists():
             return QIcon(str(p))
         # 回退：绘制简易图标

@@ -8,7 +8,7 @@ import sys
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
 
-from backend.config import app_dir, env_path
+from backend.config import app_dir, env_path, resource_dir
 from backend.pipeline import SubtitlePipeline
 from gui.main_window import MainWindow
 from gui.overlay import SubtitleOverlay, SubtitleTray
@@ -59,10 +59,13 @@ def main():
     if not os.environ.get("HF_ENDPOINT"):
         os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
 
-    # Load stylesheet
-    qss_path = app_dir() / "assets" / "style.qss"
+    # Load stylesheet（打包后资源在 _MEIPASS，不在 exe 目录）
+    qss_path = resource_dir() / "assets" / "style.qss"
     if qss_path.exists():
         app.setStyleSheet(qss_path.read_text(encoding="utf-8"))
+        logger.info("Stylesheet loaded: %s", qss_path)
+    else:
+        logger.warning("Stylesheet not found: %s", qss_path)
 
     # First-run setup
     if _needs_setup():

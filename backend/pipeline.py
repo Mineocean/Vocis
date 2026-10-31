@@ -688,7 +688,7 @@ class SubtitlePipeline:
 
     def _emit_subtitle(self, original: str, translation: str, speaker: Speaker | None = None):
         """Emit subtitle event to GUI (thread-safe via Qt Signal)."""
-        logger.debug("Subtitle: [orig] %s  [trans] %s", original, translation)
+        logger.info("Subtitle: [orig] %s  [trans] %s", original[:120], translation[:120])
         if self._on_subtitle:
             try:
                 self._on_subtitle(original, translation, speaker)

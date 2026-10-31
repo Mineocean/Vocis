@@ -57,6 +57,18 @@ def _env_float(key: str, default: float) -> float:
         return default
 
 
+def resource_dir() -> Path:
+    """只读资源目录（assets/models）。
+
+    PyInstaller onefile 会把 datas 解压到 _MEIPASS，而不是 exe 所在目录；
+    图标 / QSS / 内置模型都要从这里找，否则打包后界面无样式、无 logo。
+    """
+    mei = getattr(sys, "_MEIPASS", None)
+    if getattr(sys, "frozen", False) and mei:
+        return Path(mei)
+    return Path(__file__).resolve().parent.parent
+
+
 def env_path() -> Path:
     """返回 .env 文件路径"""
     return _env_path

@@ -3,10 +3,12 @@
 import asyncio
 import base64
 import logging
+import os
 
 import httpx
 
 from ..config import get_config
+from ..providers.presets import asr_preset
 from ..utils import normalize_api_url
 from .audio import pcm_to_wav
 from .base import ASREngine, ASRResult
@@ -23,12 +25,16 @@ class MiMoASR(ASREngine):
 
     def __init__(self):
         cfg = get_config()
-        self.api_key = cfg.asr.api_key
+        preset = asr_preset("mimo")
+        # 作为其他后端失败时的回退使用时，cfg.asr.* 可能还是别的后端的空值
+        self.api_key = cfg.asr.api_key or os.getenv("MIMO_API_KEY", "")
         self.language = cfg.asr.language
-        self.model = cfg.asr.model
+        self.model = cfg.asr.model or preset.get("default_model", "mimo-v2.5-asr")
         self._client: httpx.AsyncClient | None = None
         self._closed = False
-        self.base_url = normalize_api_url(cfg.asr.base_url)
+        self.base_url = normalize_api_url(
+            cfg.asr.base_url or os.getenv("MIMO_BASE_URL", "") or preset.get("base_url", "")
+        )
 
     @property
     def client(self) -> httpx.AsyncClient:

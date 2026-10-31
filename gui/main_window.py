@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from backend.config import app_dir, get_config
+from backend.config import app_dir, get_config, resource_dir
 from backend.providers.presets import (
     ASR_PRESETS,
     LOCAL_ASR_BACKENDS,
@@ -67,7 +67,7 @@ class MainWindow(QWidget):
         self.setFixedSize(430, 580)
         self.setWindowFlags(Qt.WindowType.WindowStaysOnTopHint)
 
-        icon_path = app_dir() / "assets" / "vocis_32.png"
+        icon_path = resource_dir() / "assets" / "vocis_32.png"
         if icon_path.exists():
             self.setWindowIcon(QIcon(str(icon_path)))
 
@@ -148,7 +148,7 @@ class MainWindow(QWidget):
 
         logo = QLabel()
         logo.setFixedSize(42, 42)
-        logo_path = app_dir() / "assets" / "vocis_64.png"
+        logo_path = resource_dir() / "assets" / "vocis_64.png"
         if logo_path.exists():
             pm = QPixmap(str(logo_path)).scaled(
                 42, 42, Qt.AspectRatioMode.KeepAspectRatio,
@@ -438,6 +438,7 @@ class MainWindow(QWidget):
         else:
             status_text = tr("running")
         self._status_label.setText(status_text)
+        self._status_chip.setToolTip(tr("status_waiting_hint") if idle else "")
         self._status_label.setStyleSheet("color: %s;" % color)
         self._toggle_btn.setText(tr("resume") if paused else tr("pause"))
 
