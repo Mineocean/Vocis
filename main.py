@@ -49,6 +49,24 @@ def _needs_setup() -> bool:
     return get_config().needs_setup()
 
 
+def _load_runtime_config():
+    """向导保存后刷新环境变量与配置单例，确保本次启动使用新配置。
+
+    `_needs_setup()` 会提前实例化配置单例；如果不 reload，
+    随后构建的 ASR / 翻译器仍会读到旧值。
+    """
+    import dotenv
+
+    from backend.config import reload_config
+    from gui.i18n import reload_language
+
+    # 向导可能只在内存里应用了配置（未勾选“记住”），不能用磁盘旧值覆盖
+    dotenv.load_dotenv(env_path(), override=False)
+    reload_config()
+    reload_language()
+    logger.info("Runtime configuration reloaded")
+
+
 def main():
     app = QApplication(sys.argv)
     app.setApplicationName("Vocis")
@@ -74,8 +92,8 @@ def main():
         if wizard.exec() != SetupWizard.DialogCode.Accepted:
             sys.exit(0)
 
-    import dotenv
-    dotenv.load_dotenv(env_path(), override=True)
+    # 无论是否走过向导，都按磁盘上的 .env 刷新一次配置单例
+    _load_runtime_config()
 
     overlay = SubtitleOverlay()
     pipeline = SubtitlePipeline()

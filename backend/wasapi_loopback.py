@@ -119,7 +119,17 @@ class WasapiLoopbackCapture:
 
     def stop(self):
         self._running.clear()
-        self.queue.put(None)
+        try:
+            self.queue.put_nowait(None)
+        except queue.Full:
+            try:
+                self.queue.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                self.queue.put_nowait(None)
+            except queue.Full:
+                pass
 
     def read(self, timeout: float = 0.5) -> np.ndarray | None:
         try:

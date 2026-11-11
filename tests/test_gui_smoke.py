@@ -69,6 +69,17 @@ def test_overlay_hides_pill_without_speaker(overlay):
     assert not overlay._trans.isVisibleTo(overlay)
 
 
+def test_final_stream_frame_starts_hide_timer(overlay):
+    overlay._hide_delay_ms = 5000
+    overlay._hide_timer.stop()
+    overlay._on_stream("原文", "译文", False, None)
+    overlay._on_stream("原文", "译文", True, None)
+    assert overlay._hide_timer.isActive()
+    overlay._hide_delay_ms = 0  # 常驻模式
+    overlay._on_stream("原文", "译文", True, None)
+    assert not overlay._hide_timer.isActive()
+
+
 def test_stream_signal_arity_and_coalescing(overlay):
     overlay.subtitle_signal.emit("原始", "译文", Speaker(1))
     assert overlay._original == "原始"
@@ -122,6 +133,56 @@ def test_settings_dialog_opens_requested_tab(qapp):
         assert dialog._tabs.currentIndex() == 2
     finally:
         dialog.close()
+
+
+def test_settings_save_emits_signal_and_syncs_whisper_path(qapp, monkeypatch):
+    from gui import settings as settings_module
+    from gui.settings import SettingsDialog
+
+    dialog = SettingsDialog()
+    captured: dict[str, str] = {}
+    fired = []
+    dialog.settings_applied.connect(lambda: fired.append(True))
+    monkeypatch.setattr(settings_module, "read_env_file", lambda: {})
+    monkeypatch.setattr(settings_module, "write_env_file", lambda env: captured.update(env))
+    monkeypatch.setattr(settings_module, "reload_config", lambda: None)
+    monkeypatch.setattr(settings_module, "reload_language", lambda: None)
+    monkeypatch.setattr("dotenv.load_dotenv", lambda *args, **kwargs: None)
+    try:
+        dialog._asr_local_radio.setChecked(True)
+        dialog._local_backend.setCurrentText("whisper")
+        dialog._whisper_model.setCurrentText("base")
+        # 手工把路径改成旧模型的目录，保存时应跟随所选模型
+        dialog._whisper_path.setText("models/faster-whisper-tiny")
+        dialog._save()
+    finally:
+        dialog.close()
+
+    assert captured["WHISPER_MODEL"] == "base"
+    assert captured["WHISPER_MODEL_PATH"] == "models/faster-whisper-base"
+    assert fired == [True]
+
+
+def test_wizard_remember_off_applies_in_memory_only(qapp, monkeypatch):
+    from gui import setup_wizard as wizard_module
+
+    wizard = wizard_module.SetupWizard()
+    written = []
+    monkeypatch.setattr(wizard_module, "read_env_file", lambda: {})
+    monkeypatch.setattr(wizard_module, "write_env_file", lambda env: written.append(env))
+    before_env = dict(os.environ)
+    try:
+        wizard._remember.setChecked(False)
+        keys = [wizard._provider.itemData(i) for i in range(wizard._provider.count())]
+        wizard._provider.setCurrentIndex(keys.index("deepseek"))
+        wizard._key.setText("session-key")
+        wizard._save()
+        assert written == []  # 未勾选“记住”不落盘
+        assert os.environ["TRANSLATOR_API_KEY"] == "session-key"  # 但本次会话生效
+    finally:
+        wizard.close()
+        os.environ.clear()
+        os.environ.update(before_env)
 
 
 def test_wizard_blocks_empty_key(qapp):

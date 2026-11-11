@@ -1,5 +1,6 @@
 """First-run setup wizard — 选择翻译提供商，可选配置语音识别。"""
 
+import os
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import (
@@ -423,8 +424,12 @@ class SetupWizard(QDialog):
             self._stack.setCurrentIndex(3)
 
     def _save(self):
-        if not self._remember.isChecked():
-            return
+        """保存配置。
+
+        勾选「记住」时写入 .env；不勾选时只注入当前进程环境，
+        本次会话仍然使用用户输入（不落盘）。
+        """
+        remember = self._remember.isChecked()
         env = read_env_file()
         provider = self._provider.currentData() or "deepseek"
         env["TRANSLATOR_PROVIDER"] = provider
@@ -447,5 +452,8 @@ class SetupWizard(QDialog):
             env["ASR_API_KEY"] = self._asr_key.text().strip()
             env["ASR_BASE_URL"] = self._asr_base.text().strip()
             env["ASR_MODEL"] = self._asr_model.currentText().strip()
-        write_env_file(env)
+        # 无论是否落盘，本次会话都使用用户输入；只有勾选“记住”才写 .env
+        os.environ.update(env)
+        if remember:
+            write_env_file(env)
         self._env = env

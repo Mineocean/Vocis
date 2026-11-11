@@ -1,12 +1,13 @@
 """Settings dialog — 翻译 / 语音识别 / 说话人 / 显示 / 音频 配置。"""
 
 import logging
+import re
 import threading
 from pathlib import Path
 
 import httpx
 import sounddevice as sd
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -93,6 +94,9 @@ def _resolve(path: str) -> Path:
 
 class SettingsDialog(QDialog):
     """Vocis settings dialog."""
+
+    #: 保存/应用成功后发出，让运行中的 pipeline/字幕立即使用新配置
+    settings_applied = Signal()
 
     def __init__(self, parent=None, initial_tab: int = 0):
         super().__init__(parent)
@@ -358,6 +362,7 @@ class SettingsDialog(QDialog):
 
         self._whisper_model = ThemedComboBox()
         self._whisper_model.addItems(WHISPER_MODELS)
+        self._whisper_model.currentTextChanged.connect(self._on_whisper_model_changed)
         form.addRow(_label(tr("whisper_model")), self._whisper_model)
 
         self._whisper_device = ThemedComboBox()
@@ -847,8 +852,17 @@ class SettingsDialog(QDialog):
 
     # ── 读取 / 保存 ───────────────────────────────────
 
+    def _on_whisper_model_changed(self, model: str):
+        """模型下拉与模型目录保持一致，避免显示 tiny 却加载 base。"""
+        if getattr(self, "_loading_values", False) or not model:
+            return
+        path = self._whisper_path.text().strip()
+        if not path or re.fullmatch(r"models/faster-whisper-[a-z0-9_.-]+", path):
+            self._whisper_path.setText(f"models/faster-whisper-{model}")
+
     def _load_values(self):
         cfg = get_config()
+        self._loading_values = True
 
         # 翻译
         tr_keys = [self._tr_provider.itemData(i) for i in range(self._tr_provider.count())]
@@ -942,6 +956,7 @@ class SettingsDialog(QDialog):
         self._ui_lang.setCurrentIndex({"": 0, "zh": 1, "en": 2}.get(ui_lang, 0))
 
         self._select_device(cfg.audio_device)
+        self._loading_values = False
 
     def _save(self):
         env = read_env_file()
@@ -965,11 +980,15 @@ class SettingsDialog(QDialog):
         else:
             env["ASR_BACKEND"] = self._local_backend.currentData() or "whisper"
 
-        env["WHISPER_MODEL"] = self._whisper_model.currentText().strip() or "base"
+        whisper_model = self._whisper_model.currentText().strip() or "base"
+        env["WHISPER_MODEL"] = whisper_model
         env["WHISPER_DEVICE"] = self._whisper_device.currentText().strip() or "auto"
-        env["WHISPER_MODEL_PATH"] = (
-            self._whisper_path.text().strip() or "models/faster-whisper-base"
+        whisper_path = (
+            self._whisper_path.text().strip() or f"models/faster-whisper-{whisper_model}"
         )
+        if re.fullmatch(r"models/faster-whisper-[a-z0-9_.-]+", whisper_path):
+            whisper_path = f"models/faster-whisper-{whisper_model}"
+        env["WHISPER_MODEL_PATH"] = whisper_path
         env["SHERPA_MODEL_PATH"] = (
             self._sherpa_path.text().strip() or "models/sherpa-streaming-zh-14M"
         )
@@ -1004,6 +1023,8 @@ class SettingsDialog(QDialog):
         reload_config()
         reload_language()
         logger.info("Settings saved: translator=%s asr=%s", provider, env.get("ASR_BACKEND"))
+        # “应用”按钮也要生效：通知运行中的界面/pipeline 重建组件
+        self.settings_applied.emit()
 
     def _save_and_close(self):
         self._save()

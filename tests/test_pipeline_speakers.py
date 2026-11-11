@@ -1,6 +1,7 @@
 """字幕回调携带说话人标签。"""
 
 import asyncio
+import threading
 
 from backend.diarization.base import Speaker
 from backend.pipeline import SubtitlePipeline
@@ -11,6 +12,7 @@ def _bare_pipeline():
     p._on_subtitle = None
     p._on_subtitle_stream = None
     p.diarizer = None
+    p._buffer_lock = threading.Lock()
     p._diar_audio = bytearray()
     p._segment_speaker = None
     p._residual = ""

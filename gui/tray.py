@@ -205,17 +205,21 @@ class TrayManager:
             self.main_window.sync_language()
         logger.info("Language switched to %s", next_lang)
 
+    def apply_runtime_settings(self):
+        if self.main_window is not None:
+            self.main_window.apply_runtime_settings()
+            return
+        if self.subtitle_widget:
+            self.subtitle_widget.apply_settings()
+        if self.pipeline:
+            self.pipeline.apply_config()
+        self.retranslate()
+
     def _open_settings(self):
         from gui.settings import SettingsDialog
         dlg = SettingsDialog()
+        dlg.settings_applied.connect(self.apply_runtime_settings)
         if dlg.exec():
-            if self.subtitle_widget:
-                self.subtitle_widget.apply_settings()
-            if self.pipeline:
-                self.pipeline.apply_config()
-            if self.main_window:
-                self.main_window.sync_language()
-                self.main_window.refresh_status()
             self.retranslate()
 
     def _open_log(self):

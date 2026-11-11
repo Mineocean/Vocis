@@ -28,15 +28,24 @@ def create_asr() -> ASREngine:
         available = list(_REGISTRY.keys())
         logger.warning("Unknown ASR backend '%s', available: %s", backend, available)
         if "mock" in _REGISTRY:
-            return _REGISTRY["mock"]()
+            engine = _REGISTRY["mock"]()
+            engine.backend = "mock"
+            return engine
         raise ValueError(f"Unknown ASR backend: {backend}. Available: {available}")
 
     try:
-        return cls()
+        engine = cls()
+        # 记录实际构建的后端，供 apply_config 判断是否发生了静默回退
+        if isinstance(engine, ASREngine):
+            engine.backend = backend
+        return engine
     except Exception as e:
         logger.warning("Failed to create ASR backend '%s': %s, falling back to mimo", backend, e)
         if backend != "mimo" and "mimo" in _REGISTRY:
-            return _REGISTRY["mimo"]()
+            engine = _REGISTRY["mimo"]()
+            if isinstance(engine, ASREngine):
+                engine.backend = "mimo"
+            return engine
         raise
 
 

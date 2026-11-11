@@ -230,8 +230,22 @@ class AudioCapture:
             except Exception:
                 pass
             self._stream = None
-        self.queue.put(None)
+        self._signal_stop()
         logger.info("音频采集已停止")
+
+    def _signal_stop(self):
+        """非阻塞地通知消费者退出；队列满时先丢弃最旧数据。"""
+        try:
+            self.queue.put_nowait(None)
+        except queue.Full:
+            try:
+                self.queue.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                self.queue.put_nowait(None)
+            except queue.Full:
+                pass
 
     def read(self, timeout: float = 0.5) -> np.ndarray | None:
         if not self._enabled:

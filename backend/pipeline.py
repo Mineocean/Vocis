@@ -10,6 +10,11 @@ Async architecture:
 
 说话人分离：每个 VAD 语音段做一次说话人嵌入 + 在线聚类，
 字幕回调带上 Speaker（短段沿用上一位，未确认时为 None）。
+
+并发约定：
+  - 音频线程只写缓冲 + 入队“段结束任务”，绝不改识别文本状态；
+  - 增量 worker 顺序消费段任务，保证“先确认上一段，再处理下一段”；
+  - 配置切换、停止都在 pipeline 自己的事件循环里完成。
 """
 
 import asyncio
@@ -17,7 +22,9 @@ import difflib
 import logging
 import re
 import threading
+from collections import deque
 from collections.abc import Callable
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -39,6 +46,27 @@ _LANG_MAP = {"zh": "中文", "en": "英文", "ja": "日文"}
 # 送说话人嵌入的最长音频（秒），限制内存与延迟
 _MAX_DIAR_BYTES = 12 * 16000 * 2
 
+# 停止时等待任务自行退出的时间（秒）；超时后取消并再等一段时间
+_STOP_TASK_TIMEOUT = 3.0
+_STOP_CANCEL_TIMEOUT = 2.0
+
+# 发送最终帧前翻译残句的上限（秒）；超时仍发出原文
+_FINAL_TRANSLATE_TIMEOUT = 15.0
+
+
+@dataclass
+class _SegmentJob:
+    """一个 VAD 语音段的最终确认任务。
+
+    音频线程在段边界创建它（并立即清空滚动缓冲），worker 之后按顺序处理，
+    因此下一段音频不会被上一段的 finalize 误删或混入。
+    """
+
+    final_text: str | None = None   # 流式后端 end_stream() 的结果
+    audio: bytes = b""              # 非流式后端：本段尚未识别的音频快照
+    diar_audio: bytes = b""         # 本段用于说话人判定的音频
+    speaker: Speaker | None = None  # 段内已经判定的说话人（可能为 None）
+
 
 class SubtitlePipeline:
     """
@@ -54,7 +82,7 @@ class SubtitlePipeline:
         self.asr = create_asr()
         self.translator = create_translator()
         self.diarizer = create_diarizer()
-        self._asr_streaming = bool(getattr(self.asr, "is_streaming", False))
+        self._asr_streaming = bool(self.asr.is_streaming)
 
         self._loop: asyncio.AbstractEventLoop | None = None
         self._loop_thread: threading.Thread | None = None
@@ -63,14 +91,20 @@ class SubtitlePipeline:
         self._paused.set()  # Not paused initially
 
         self._asr_queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=10)
-        self._translate_queue: asyncio.Queue[tuple[str, str, Speaker | None] | None] = asyncio.Queue(
-            maxsize=5
-        )
+        # (task_type, text, speaker, skip_translate)
+        self._translate_queue: asyncio.Queue[
+            tuple[str, str, Speaker | None, bool] | None
+        ] = asyncio.Queue(maxsize=5)
 
         self._on_subtitle: Callable[[str, str, Speaker | None], None] | None = None
         self._on_subtitle_stream: Callable[[str, str, bool, Speaker | None], None] | None = None
 
         self._tasks: list[asyncio.Task] = []
+        self._stopping = False
+        self._stop_done = False
+        self._stop_had_pending = False
+        # 旧组件不在任务运行中关闭；停止时统一释放
+        self._retired: list[object] = []
 
         cfg = get_config()
         self._language = cfg.asr.language
@@ -84,6 +118,9 @@ class SubtitlePipeline:
         self._stream_sentence_chars = cfg.stream_sentence_chars
         self._rolling_audio: bytearray = bytearray()   # 累积的 int16 PCM（本段）
         self._diar_audio: bytearray = bytearray()      # 说话人嵌入用的本段音频
+        self._buffer_lock = threading.Lock()
+        self._segment_jobs: deque[_SegmentJob] = deque()
+        self._segment_lock = threading.Lock()
         self._segment_speaker: Speaker | None = None
         self._last_text = ""                            # 上一次 ASR 全文
         self._confirmed_sentences: list[str] = []       # 已翻译的完整句子原文
@@ -110,7 +147,18 @@ class SubtitlePipeline:
 
     @staticmethod
     def _make_asr_signature(cfg) -> tuple:
-        return (cfg.asr.backend, cfg.asr.base_url, cfg.asr.model, cfg.asr.language)
+        """所有影响 ASR 引擎构建的字段（仅无需重建的 language 除外）。"""
+        a = cfg.asr
+        return (
+            a.backend,
+            a.api_key,
+            a.base_url,
+            a.model,
+            a.whisper_model,
+            a.whisper_model_path,
+            a.whisper_device,
+            a.sherpa_model_path,
+        )
 
     @staticmethod
     def _make_diar_signature(cfg) -> tuple:
@@ -124,7 +172,10 @@ class SubtitlePipeline:
 
     def start(self) -> bool:
         """Start the pipeline."""
+        if self._running.is_set():
+            return True
         if not self.capture.start():
+            logger.error("Failed to start audio capture")
             return False
 
         self._loop = asyncio.new_event_loop()
@@ -134,12 +185,38 @@ class SubtitlePipeline:
         future = asyncio.run_coroutine_threadsafe(self._async_start(), self._loop)
         try:
             future.result(timeout=5.0)
-        except Exception as e:
-            logger.error("Failed to start pipeline: %s", e)
+        except Exception:
+            logger.exception("Failed to start pipeline")
+            self._cleanup_failed_start()
             return False
 
         logger.info("Pipeline started (async)")
         return True
+
+    def _cleanup_failed_start(self):
+        """启动失败：停止采集、释放组件并回收事件循环线程。"""
+        self._running.clear()
+        self.capture.stop()
+        for component in (self.translator, self.asr, self.diarizer):
+            try:
+                close = getattr(component, "close", None)
+                if callable(close):
+                    close()
+            except Exception:
+                logger.debug("Closing component after failed start failed", exc_info=True)
+        loop = self._loop
+        if loop is not None and loop.is_running():
+            loop.call_soon_threadsafe(loop.stop)
+        if self._loop_thread and self._loop_thread.is_alive():
+            self._loop_thread.join(timeout=3.0)
+        if loop is not None and not loop.is_closed():
+            try:
+                loop.close()
+            except Exception:
+                logger.debug("Closing event loop failed", exc_info=True)
+        self._loop = None
+        self._loop_thread = None
+        self._tasks = []
 
     async def _async_start(self):
         """Start all coroutines."""
@@ -157,49 +234,171 @@ class SubtitlePipeline:
         logger.debug("Async tasks started")
 
     def stop(self):
-        """Stop the pipeline."""
-        if self._loop is None:
+        """停止 pipeline（幂等、有限等待）。"""
+        if self._stop_done:
+            return
+        if self._stopping:
+            logger.debug("Pipeline stop already in progress")
+            return
+        self._stopping = True
+        loop = self._loop
+        thread = self._loop_thread
+        try:
+            if loop is not None and loop.is_running():
+                try:
+                    future = asyncio.run_coroutine_threadsafe(self._async_stop(), loop)
+                    future.result(timeout=12.0)
+                except Exception:
+                    logger.exception("Async stop failed or timed out")
+                try:
+                    loop.call_soon_threadsafe(loop.stop)
+                except Exception:
+                    logger.debug("Stopping event loop failed", exc_info=True)
+            if thread is not None and thread.is_alive():
+                thread.join(timeout=5.0)
+                if thread.is_alive():
+                    logger.error("Event loop thread did not exit within 5s")
+        finally:
+            self.capture.stop()
+            if self._stop_had_pending:
+                logger.warning("Skipping retired component close: background work still running")
+            else:
+                self._close_retired()
+            if loop is not None and not self._stop_had_pending and not loop.is_closed():
+                try:
+                    loop.close()
+                except Exception:
+                    logger.debug("Closing event loop failed", exc_info=True)
+            self._loop = None
+            self._loop_thread = None
+            self._tasks = []
+            self._stopping = False
+            self._stop_done = True
+            logger.info("Pipeline stopped")
+
+    async def _async_stop(self):
+        """在 pipeline 事件循环内停止 worker，并释放异步资源。
+
+        采用“尽力 flush”：停止时 ASR worker 会把已排队/缓冲区中的语音段
+        转写并交给翻译队列，但最多等待 3s；超时后取消任务，避免退出卡死。
+        """
+        self._running.clear()
+        self._paused.set()
+        with self._segment_lock:
+            self._segment_jobs.clear()
+        for queue in (self._asr_queue, self._translate_queue):
+            self._safe_put(queue, None)
+
+        tasks = [t for t in self._tasks if not t.done() and t is not asyncio.current_task()]
+        pending: set[asyncio.Task] = set()
+        if tasks:
+            try:
+                _, pending = await asyncio.wait(tasks, timeout=_STOP_TASK_TIMEOUT)
+            except Exception:
+                logger.exception("Waiting for pipeline tasks failed")
+                pending = set(tasks)
+            if pending:
+                logger.warning(
+                    "Stopping pipeline: %d task(s) still running after %.1fs, cancelling",
+                    len(pending), _STOP_TASK_TIMEOUT,
+                )
+                for task in pending:
+                    task.cancel()
+                try:
+                    _, still_pending = await asyncio.wait(pending, timeout=_STOP_CANCEL_TIMEOUT)
+                except Exception:
+                    logger.exception("Waiting for cancelled tasks failed")
+                    still_pending = pending
+                if still_pending:
+                    logger.error(
+                        "Tasks still pending after cancel (%.1fs); "
+                        "leaving ASR/diarizer open to avoid releasing models mid-inference",
+                        _STOP_CANCEL_TIMEOUT,
+                    )
+                pending = set(still_pending)
+
+        # 已结束任务的异常也要取走，避免 "Task exception was never retrieved"
+        current = asyncio.current_task()
+        for task in self._tasks:
+            if task is current or not task.done():
+                continue
+            try:
+                task.exception()
+            except (asyncio.CancelledError, Exception):
+                pass
+
+        if pending:
+            self._stop_had_pending = True
+            logger.warning(
+                "Skipping component close: %d background task(s) may still be using them",
+                len(pending),
+            )
             return
 
-        self._running.clear()
-        self._paused.set()  # Unblock any paused coroutines
+        # 尽力把 ASR worker 在退出前转写出的最后几段翻译并显示完（有时间上限）
+        await self._drain_pending_translations()
 
         try:
-            asyncio.run_coroutine_threadsafe(self._asr_queue.put(None), self._loop).result(timeout=2.0)
-            asyncio.run_coroutine_threadsafe(self._translate_queue.put(None), self._loop).result(
-                timeout=2.0
-            )
-
-            for task in self._tasks:
-                self._loop.call_soon_threadsafe(task.cancel)
-
-            try:
-                future = asyncio.run_coroutine_threadsafe(
-                    asyncio.gather(*self._tasks, return_exceptions=True), self._loop
-                )
-                future.result(timeout=5.0)
-            except Exception:
-                pass
-
-            try:
-                asyncio.run_coroutine_threadsafe(self.translator.close_async(), self._loop).result(
-                    timeout=2.0
-                )
-            except Exception:
-                pass
+            await self.translator.close_async()
         except Exception:
-            pass
-
-        self.capture.stop()
-        self.asr.close()
+            logger.exception("Closing translator failed")
+        try:
+            self.asr.close()
+        except Exception:
+            logger.exception("Closing ASR failed")
         if self.diarizer is not None:
-            self.diarizer.close()
+            try:
+                self.diarizer.close()
+            except Exception:
+                logger.exception("Closing diarizer failed")
 
-        self._loop.call_soon_threadsafe(self._loop.stop)
-        if self._loop_thread and self._loop_thread.is_alive():
-            self._loop_thread.join(timeout=3.0)
+    async def _drain_pending_translations(self, timeout: float = 2.0):
+        """停止前把翻译队列中已识别的内容处理完，最多等待 timeout 秒。"""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while loop.time() < deadline:
+            try:
+                item = self._translate_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                return
+            if item is None:
+                continue
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                return
+            try:
+                await asyncio.wait_for(self._handle_translate_item(item), timeout=remaining)
+            except (asyncio.TimeoutError, Exception):
+                logger.warning("Dropping pending translation during stop")
+                return
 
-        logger.info("Pipeline stopped")
+    def _close_retired(self):
+        """停止后释放切换配置时保留的旧组件。"""
+        for obj in self._retired:
+            try:
+                close = getattr(obj, "close", None)
+                if callable(close):
+                    close()
+            except Exception:
+                logger.debug("Closing retired component failed", exc_info=True)
+        self._retired.clear()
+
+    @staticmethod
+    def _safe_put(queue: asyncio.Queue, item) -> bool:
+        """非阻塞入队；满时丢弃最旧项后重试。"""
+        try:
+            queue.put_nowait(item)
+            return True
+        except asyncio.QueueFull:
+            try:
+                queue.get_nowait()
+            except asyncio.QueueEmpty:
+                pass
+            try:
+                queue.put_nowait(item)
+                return True
+            except asyncio.QueueFull:
+                return False
 
     def pause(self):
         self._paused.clear()
@@ -210,7 +409,7 @@ class SubtitlePipeline:
         self._paused.set()
         self.capture.set_enabled(True)
         self.vad.reset()
-        if self._asr_streaming:
+        if self._running.is_set() and self._asr_streaming:
             try:
                 self.asr.start_stream()
             except Exception:
@@ -223,65 +422,113 @@ class SubtitlePipeline:
         self.asr.set_language(lang)
         logger.info("ASR language: %s", lang)
 
-    def apply_config(self):
-        """重新加载配置；提供商/说话人设置变了就重建对应组件。"""
+    def apply_config(self) -> bool:
+        """重新加载配置并安全重建组件；返回是否全部成功。"""
         cfg = reload_config()
+        loop = self._loop
+        if loop is not None and loop.is_running():
+            try:
+                future = asyncio.run_coroutine_threadsafe(
+                    self._async_apply_config(cfg, live=True), loop
+                )
+                return bool(future.result(timeout=10.0))
+            except Exception:
+                logger.exception("apply_config failed")
+                return False
+        try:
+            return bool(asyncio.run(self._async_apply_config(cfg, live=False)))
+        except Exception:
+            logger.exception("apply_config failed")
+            return False
 
+    async def _async_apply_config(self, cfg, live: bool) -> bool:
         self._language = cfg.asr.language
         self.incremental_enabled = cfg.incremental_enabled
         self._incremental_interval = cfg.incremental_interval
         self._incremental_max_seconds = cfg.incremental_max_seconds
         self._stream_sentence_chars = cfg.stream_sentence_chars
+        ok = True
 
-        # 翻译客户端：总是重建（廉价、懒连接），保证换提供商/目标语言后缓存不串味
-        old_translator = self.translator
+        # 翻译客户端：总是重建（廉价、懒连接），换提供商/目标语言后缓存不串味
         try:
-            self.translator = create_translator()
+            old_translator = self.translator
+            new_translator = create_translator()
+            self.translator = new_translator
+            self._retire(old_translator, live)
             logger.info(
                 "Translator: %s (%s @ %s)",
                 cfg.translator.provider, cfg.translator.model, cfg.translator.base_url,
             )
         except Exception:
             logger.exception("Failed to rebuild translator, keeping previous one")
-        if old_translator is not None and old_translator is not self.translator:
-            try:
-                if self._loop and self._loop.is_running():
-                    asyncio.run_coroutine_threadsafe(old_translator.close_async(), self._loop)
-                else:
-                    old_translator.close()
-            except Exception:
-                logger.debug("Closing previous translator failed", exc_info=True)
+            ok = False
 
-        # ASR：只在后端/端点/语言真的变了时重建
+        # ASR：所有影响引擎构建的字段变了才重建
         signature = self._make_asr_signature(cfg)
         if signature != self._asr_signature:
             try:
                 new_asr = create_asr()
-                old_asr = self.asr
-                self.asr = new_asr
-                self._asr_streaming = bool(getattr(new_asr, "is_streaming", False))
-                self._asr_signature = signature
-                old_asr.close()
-                logger.info("ASR backend rebuilt: %s", cfg.asr.backend)
+                actual_backend = getattr(new_asr, "backend", "") or cfg.asr.backend
+                if actual_backend != cfg.asr.backend.lower():
+                    logger.error(
+                        "ASR rebuild fell back to '%s' instead of '%s'; keeping previous engine",
+                        actual_backend, cfg.asr.backend,
+                    )
+                    new_asr.close()
+                    ok = False
+                else:
+                    # 先让新流式引擎进入可推送状态，再切换引用，避免 feeder 抢跑
+                    if live and new_asr.is_streaming:
+                        try:
+                            await asyncio.to_thread(new_asr.start_stream)
+                        except Exception:
+                            logger.exception("Starting new streaming ASR failed")
+                    old_asr = self.asr
+                    self.asr = new_asr
+                    self._asr_streaming = bool(new_asr.is_streaming)
+                    self._asr_signature = signature
+                    self._retire(old_asr, live)
+                    logger.info("ASR backend rebuilt: %s", cfg.asr.backend)
             except Exception:
                 logger.exception("Failed to rebuild ASR backend, keeping previous one")
+                ok = False
         else:
             self.asr.set_language(cfg.asr.language)
 
         # 说话人：开关/后端/参数变了才重建（模型加载/下载较慢）
         diar_signature = self._make_diar_signature(cfg)
         if diar_signature != self._diar_signature:
-            if self.diarizer is not None:
-                self.diarizer.close()
-            self.diarizer = create_diarizer()
-            self._diar_signature = diar_signature
+            try:
+                new_diarizer = create_diarizer()
+                old_diarizer = self.diarizer
+                self.diarizer = new_diarizer
+                self._diar_signature = diar_signature
+                self._retire(old_diarizer, live)
+            except Exception:
+                logger.exception("Failed to rebuild diarizer, keeping previous one")
+                ok = False
 
         self._reset_incremental()
         logger.info(
-            "Config applied: ASR=%s, provider=%s, target=%s, diarization=%s",
+            "Config applied: ASR=%s, provider=%s, target=%s, diarization=%s, ok=%s",
             cfg.asr.backend, cfg.translator.provider, cfg.translator.target_language,
-            cfg.diarization.enabled,
+            cfg.diarization.enabled, ok,
         )
+        return ok
+
+    def _retire(self, component, live: bool):
+        """保留旧组件直到停止，避免在旧识别任务仍在执行时释放模型。"""
+        if component is None:
+            return
+        if live:
+            self._retired.append(component)
+        else:
+            try:
+                close = getattr(component, "close", None)
+                if callable(close):
+                    close()
+            except Exception:
+                logger.debug("Closing replaced component failed", exc_info=True)
 
     def reset_context(self):
         self.translator.reset_context()
@@ -311,17 +558,16 @@ class SubtitlePipeline:
 
                 if self.incremental_enabled:
                     pcm = (np.clip(chunk, -1.0, 1.0) * 32767).astype(np.int16).tobytes()
-                    # 说话人嵌入用的音频（两种 ASR 模式都要）
-                    self._diar_audio.extend(pcm)
-                    if len(self._diar_audio) > _MAX_DIAR_BYTES:
-                        del self._diar_audio[: len(self._diar_audio) - _MAX_DIAR_BYTES]
+                    self._extend_diar_audio(pcm)
                     if self._asr_streaming:
                         await asyncio.to_thread(self.asr.push_audio, pcm)
                         if speech_segments:
-                            self._segment_end.set()
+                            # 段边界立即封口：end_stream + 新流，避免下一段音频混入
+                            await self._finish_stream_segment()
                     else:
-                        self._rolling_audio.extend(pcm)
+                        self._extend_rolling_audio(pcm)
                         if speech_segments:
+                            self._enqueue_segment_job(audio=self._take_rolling_audio())
                             self._segment_end.set()
                 else:
                     for segment in speech_segments:
@@ -334,6 +580,140 @@ class SubtitlePipeline:
                 await asyncio.sleep(0.5)
         logger.debug("Audio feeder stopped")
 
+    # ── 段缓冲 / 段任务 ───────────────────────────────
+
+    def _max_rolling_bytes(self) -> int:
+        return max(1, int(self._incremental_max_seconds * 16000 * 2))
+
+    def _extend_rolling_audio(self, pcm: bytes):
+        with self._buffer_lock:
+            self._rolling_audio.extend(pcm)
+            limit = self._max_rolling_bytes()
+            if len(self._rolling_audio) > limit:
+                del self._rolling_audio[: len(self._rolling_audio) - limit]
+
+    def _take_rolling_audio(self) -> bytes:
+        with self._buffer_lock:
+            audio = bytes(self._rolling_audio)
+            self._rolling_audio.clear()
+            return audio
+
+    def _snapshot_rolling_audio(self) -> bytes:
+        with self._buffer_lock:
+            return bytes(self._rolling_audio)
+
+    def _extend_diar_audio(self, pcm: bytes):
+        with self._buffer_lock:
+            self._diar_audio.extend(pcm)
+            if len(self._diar_audio) > _MAX_DIAR_BYTES:
+                del self._diar_audio[: len(self._diar_audio) - _MAX_DIAR_BYTES]
+
+    def _enqueue_segment_job(self, *, final_text: str | None = None, audio: bytes = b""):
+        with self._buffer_lock:
+            diar_audio = bytes(self._diar_audio)
+            self._diar_audio.clear()
+            speaker = self._segment_speaker
+            self._segment_speaker = None
+        with self._segment_lock:
+            self._segment_jobs.append(
+                _SegmentJob(
+                    final_text=final_text,
+                    audio=audio,
+                    diar_audio=diar_audio,
+                    speaker=speaker,
+                )
+            )
+
+    async def _finish_stream_segment(self):
+        """流式后端在段边界封口：取最终文本并开启新流。"""
+        final = ""
+        try:
+            final = await asyncio.to_thread(self.asr.end_stream)
+        except Exception:
+            logger.exception("Failed to finalize streaming ASR segment")
+        self._enqueue_segment_job(final_text=(final or "").strip() or None)
+        # 先发段结束信号，worker 就不会把新流的 partial 算进旧段
+        self._segment_end.set()
+        try:
+            await asyncio.to_thread(self.asr.start_stream)
+        except Exception:
+            logger.exception("Failed to restart streaming ASR")
+
+    async def _drain_segment_jobs(self):
+        """按顺序确认所有已结束的段；每段只发一次最终帧。"""
+        while True:
+            with self._segment_lock:
+                job = self._segment_jobs.popleft() if self._segment_jobs else None
+            if job is None:
+                break
+            try:
+                await self._finalize_segment(job)
+            except Exception:
+                logger.exception("Finalizing speech segment failed")
+            finally:
+                self._reset_segment_state()
+        self._segment_end.clear()
+
+    async def _finalize_segment(self, job: _SegmentJob):
+        speaker = job.speaker
+        if (
+            speaker is None
+            and self.diarizer is not None
+            and len(job.diar_audio) >= int(0.5 * 16000) * 2
+        ):
+            try:
+                speaker = await self.diarizer.assign_async(job.diar_audio)
+            except Exception:
+                logger.exception("Speaker diarization error")
+
+        final_text = job.final_text
+        if not self._asr_streaming and job.audio:
+            # 这里的音频已经过 VAD（>= min_speech_duration），门槛放宽，
+            # 否则 0.3s 的短句会在第一次周期识别前被丢掉。
+            if self._audio_has_speech(job.audio, min_seconds=0.2):
+                try:
+                    result = await self.asr.transcribe_async(job.audio)
+                except Exception:
+                    logger.exception("Final ASR failed, keeping partial text")
+                    result = None
+                if result:
+                    try:
+                        text = (result[0] or "").strip()
+                    except (TypeError, ValueError):
+                        logger.error("Unexpected ASR result: %r", result)
+                        text = ""
+                    if text:
+                        final_text = text
+            else:
+                logger.debug("Segment has no speech, skipping final ASR")
+
+        # 合并 final 与 partial：最终文本以 final 为准，只保留尚未确认的部分
+        if final_text:
+            final = final_text.strip()
+            if final:
+                self._residual = self._merge_final_text(final).strip()
+                self._last_text = final
+
+        has_content = bool(
+            self._last_text.strip() or self._confirmed_sentences or self._confirmed_trans.strip()
+        )
+        if not has_content:
+            logger.debug("Segment finished without text, no subtitle emitted")
+            return
+
+        try:
+            await asyncio.wait_for(
+                self._flush_residual(speaker), timeout=_FINAL_TRANSLATE_TIMEOUT
+            )
+        except asyncio.TimeoutError:
+            logger.warning("Final translation timed out; emitting original text")
+            self._emit_stream(self._last_text.strip(), self._confirmed_trans, True, speaker)
+            self._residual = ""
+        except Exception:
+            logger.exception("Flushing final segment failed; emitting original text")
+            self._emit_stream(self._last_text.strip(), self._confirmed_trans, True, speaker)
+            self._residual = ""
+
     # ── 说话人 ────────────────────────────────────────
 
     async def _ensure_segment_speaker(self) -> Speaker | None:
@@ -342,7 +722,8 @@ class SubtitlePipeline:
             return None
         if self._segment_speaker is not None:
             return self._segment_speaker
-        audio = bytes(self._diar_audio)
+        with self._buffer_lock:
+            audio = bytes(self._diar_audio)
         if len(audio) < int(0.5 * 16000) * 2:
             return None
         try:
@@ -382,18 +763,26 @@ class SubtitlePipeline:
             last = ""
         return [p for p in complete if p and p.strip()], (last or "")
 
-    def _reset_incremental(self):
-        self._rolling_audio.clear()
-        self._diar_audio.clear()
-        self._segment_speaker = None
+    def _reset_segment_state(self):
+        """只清空“本段文本/说话人”状态，不动段任务队列。"""
         self._last_text = ""
         self._confirmed_sentences.clear()
         self._confirmed_trans = ""
         self._residual = ""
-        self._segment_end.clear()
         self._current_lang = None
         self._current_lang_prob = 0.0
         self._skip_translate = False
+
+    def _reset_incremental(self):
+        """完全重置增量识别状态（暂停/恢复、切换配置、停止时）。"""
+        with self._buffer_lock:
+            self._rolling_audio.clear()
+            self._diar_audio.clear()
+        with self._segment_lock:
+            self._segment_jobs.clear()
+        self._segment_speaker = None
+        self._segment_end.clear()
+        self._reset_segment_state()
 
     @staticmethod
     def _audio_has_speech(audio: bytes, min_seconds: float = 0.4,
@@ -436,16 +825,10 @@ class SubtitlePipeline:
             if not self._running.is_set():
                 break
 
-            # 段结束：先定说话人，再翻译残句作为最终确认，然后重置本段状态
+            # 段结束：先确认最终文本/残句，再进入下一段
+            # （段边界可能在 sleep/唤醒期间或上一次 ASR await 期间产生）
             if self._segment_end.is_set():
-                speaker = await self._ensure_segment_speaker()
-                await self._flush_residual(speaker)
-                if self._asr_streaming:
-                    final = await asyncio.to_thread(self.asr.end_stream)
-                    if final and final.strip():
-                        logger.debug("Sherpa final segment: %s", final.strip())
-                    await asyncio.to_thread(self.asr.start_stream)
-                self._reset_incremental()
+                await self._drain_segment_jobs()
                 continue
 
             if self._asr_streaming:
@@ -453,6 +836,9 @@ class SubtitlePipeline:
                     text = await asyncio.to_thread(self.asr.get_partial_text)
                 except Exception:
                     logger.exception("Streaming ASR error")
+                    continue
+                # 读取期间段可能已经封口并开启新流，旧 partial 不能算进新段
+                if self._segment_end.is_set():
                     continue
                 text = (text or "").strip()
                 if not text:
@@ -482,7 +868,7 @@ class SubtitlePipeline:
                     self._emit_stream(text, self._confirmed_trans, False, speaker)
                 continue
 
-            audio = bytes(self._rolling_audio)
+            audio = self._snapshot_rolling_audio()
             if not audio:
                 continue
 
@@ -491,7 +877,7 @@ class SubtitlePipeline:
                 continue
 
             # 截断过长的滚动缓冲，避免云端 ASR 处理超时
-            max_bytes = int(self._incremental_max_seconds * 16000 * 2)
+            max_bytes = self._max_rolling_bytes()
             if len(audio) > max_bytes:
                 audio = audio[-max_bytes:]
 
@@ -502,14 +888,18 @@ class SubtitlePipeline:
                 continue
             if not result:
                 continue
-            text, lang, prob = result
-            text = text.strip()
+            try:
+                text, lang, prob = result
+            except (TypeError, ValueError):
+                logger.error("Unexpected ASR result: %r", result)
+                continue
+            text = (text or "").strip()
             if not text:
                 continue
 
             # 记录检测语言并决定本段是否跳过翻译（源语言 == 目标语言）
             self._current_lang = lang
-            self._current_lang_prob = prob
+            self._current_lang_prob = float(prob or 0.0)
             self._skip_translate = self._should_skip_translate(lang, prob)
 
             new_text = self._diff_text(self._last_text, text)
@@ -540,6 +930,25 @@ class SubtitlePipeline:
                 result.extend(curr[j1:j2])
         return result
 
+    def _merge_final_text(self, final: str) -> str:
+        """计算 final 中尚未确认（未翻译）的尾部文本。
+
+        - 没有任何已确认句子时，整段都还没翻译，直接使用 final（避免重复追加）；
+        - 有已确认句子时，从 confirmed 之后截取，final 修正已确认词的修正不会重复；
+        - confirmed 与 final 对不上（例如 final 只覆盖末尾窗口）时退回文本差分。
+        """
+        confirmed = "".join(self._confirmed_sentences).strip()
+        if not confirmed:
+            return final
+        if final.startswith(confirmed):
+            return final[len(confirmed):]
+        sm = difflib.SequenceMatcher(None, confirmed, final, autojunk=False)
+        blocks = [b for b in sm.get_matching_blocks() if b.size >= 3]
+        if blocks:
+            last = blocks[-1]
+            return final[last.b + last.size:]
+        return self._diff_text(self._last_text, final)
+
     async def _translate_sentences(self, sentences: list[str]):
         """逐句翻译完整句子，追加到已确认译文。"""
         for sent in sentences:
@@ -562,11 +971,13 @@ class SubtitlePipeline:
                 )
 
     async def _flush_residual(self, speaker: Speaker | None = None):
-        """段结束时翻译尚未处理的残句（最终确认）。"""
+        """段结束最终确认：翻译残句并发出最终帧。
+
+        即使没有残句（句子刚好完整结束），只要本段有内容也必须发最终帧，
+        否则界面不会启动自动隐藏计时。
+        """
         residual = self._residual.strip()
-        if not residual:
-            return
-        if not self._skip_translate:
+        if residual and not self._skip_translate:
             try:
                 translation = await self.translator.translate_async(residual)
             except Exception:
@@ -578,10 +989,10 @@ class SubtitlePipeline:
                     if self._confirmed_trans
                     else translation
                 )
-        # 无论翻译成功与否都发出最终帧：原文不能丢
-        if self._last_text.strip():
-            self._emit_stream(self._last_text, self._confirmed_trans, True, speaker)
         self._residual = ""
+        original = self._last_text.strip() or "".join(self._confirmed_sentences).strip()
+        if original or self._confirmed_trans.strip():
+            self._emit_stream(original, self._confirmed_trans, True, speaker)
 
     def _emit_stream(
         self, original: str, translation: str, is_final: bool, speaker: Speaker | None = None
@@ -598,6 +1009,42 @@ class SubtitlePipeline:
                 self._on_subtitle_stream(original, translation, is_final, speaker)
             except Exception:
                 logger.exception("Stream subtitle callback error")
+
+    # ── 普通段落模式 ──────────────────────────────────
+
+    async def _transcribe_segment(
+        self, segment: bytes
+    ) -> tuple[str, str | None, float] | None:
+        """识别一段音频并统一解包为 (text, lang, probability)。"""
+        try:
+            result = await self.asr.transcribe_async(segment)
+        except Exception:
+            logger.exception("ASR transcription failed")
+            return None
+        if not result:
+            return None
+        try:
+            text, lang, prob = result
+        except (TypeError, ValueError):
+            logger.error("Unexpected ASR result: %r", result)
+            return None
+        text = (text or "").strip()
+        if not text:
+            return None
+        return text, lang, float(prob or 0.0)
+
+    def _queue_translation(
+        self,
+        text: str,
+        lang: str | None,
+        prob: float,
+        speaker: Speaker | None,
+        task_type: str,
+    ):
+        """入队前就把“是否跳译”算好，队列里只放纯文本。"""
+        item = (task_type, text, speaker, self._should_skip_translate(lang, prob))
+        if not self._safe_put(self._translate_queue, item):
+            logger.warning("Translate queue full, dropping: %s", text[:30])
 
     async def _asr_worker(self):
         """Transcribe speech segments to text."""
@@ -618,14 +1065,11 @@ class SubtitlePipeline:
                     except Exception:
                         logger.exception("Speaker diarization error")
 
-                text = await self.asr.transcribe_async(segment)
-                if not text:
+                result = await self._transcribe_segment(segment)
+                if result is None:
                     continue
-
-                try:
-                    self._translate_queue.put_nowait(("normal", text, speaker))
-                except asyncio.QueueFull:
-                    logger.warning("Translate queue full, dropping: %s", text[:30])
+                text, lang, prob = result
+                self._queue_translation(text, lang, prob, speaker, "normal")
 
             except TimeoutError:
                 continue
@@ -633,20 +1077,24 @@ class SubtitlePipeline:
                 logger.exception("ASR worker error")
                 await asyncio.sleep(0.5)
 
-        # Flush remaining
-        segments = self.vad.flush()
-        for seg in segments:
-            text = await self.asr.transcribe_async(seg)
-            if text:
-                try:
-                    self._translate_queue.put_nowait(("flush", text, None))
-                except asyncio.QueueFull:
-                    pass
+        # Flush remaining（尽力而为；取消/超时由 stop() 控制）
+        remaining: list[bytes] = []
+        while True:
+            try:
+                item = self._asr_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            if item:
+                remaining.append(item)
+        remaining.extend(self.vad.flush())
+        for seg in remaining:
+            result = await self._transcribe_segment(seg)
+            if result is None:
+                continue
+            text, lang, prob = result
+            self._queue_translation(text, lang, prob, None, "flush")
 
-        try:
-            self._translate_queue.put_nowait(None)
-        except asyncio.QueueFull:
-            pass
+        self._safe_put(self._translate_queue, None)
         logger.debug("ASR worker stopped")
 
     async def _translate_worker(self):
@@ -657,20 +1105,7 @@ class SubtitlePipeline:
                 item = await asyncio.wait_for(self._translate_queue.get(), timeout=1.0)
                 if item is None:
                     break
-
-                task_type, text, speaker = item
-
-                await asyncio.to_thread(self._paused.wait)
-
-                cfg = get_config()
-                use_stream = cfg.display.stream_translation
-
-                if task_type == "flush" or not use_stream:
-                    translation = await self.translator.translate_async(text)
-                    self._emit_subtitle(text, translation or "...", speaker)
-                else:
-                    await self._stream_translate(text, speaker)
-
+                await self._handle_translate_item(item)
             except TimeoutError:
                 continue
             except Exception:
@@ -678,6 +1113,22 @@ class SubtitlePipeline:
                 await asyncio.sleep(0.5)
 
         logger.debug("Translate worker stopped")
+
+    async def _handle_translate_item(
+        self, item: tuple[str, str, Speaker | None, bool]
+    ):
+        task_type, text, speaker, skip_translate = item
+        await asyncio.to_thread(self._paused.wait)
+        if skip_translate:
+            # 源语言 == 目标语言：保留原文字幕，不显示失败占位符
+            self._emit_subtitle(text, "", speaker)
+            return
+        cfg = get_config()
+        if task_type == "flush" or not cfg.display.stream_translation:
+            translation = await self.translator.translate_async(text)
+            self._emit_subtitle(text, translation or "", speaker)
+        else:
+            await self._stream_translate(text, speaker)
 
     async def _stream_translate(self, text: str, speaker: Speaker | None = None):
         """Streaming translation — emit subtitle chunks."""
@@ -691,7 +1142,7 @@ class SubtitlePipeline:
         except Exception:
             logger.exception("Streaming translation error")
             translation = await self.translator.translate_async(text)
-            self._emit_subtitle(text, translation or "...", speaker)
+            self._emit_subtitle(text, translation or "", speaker)
 
     def _emit_subtitle(self, original: str, translation: str, speaker: Speaker | None = None):
         """Emit subtitle event to GUI (thread-safe via Qt Signal)."""

@@ -522,18 +522,29 @@ class MainWindow(QWidget):
             self.tray_manager._toggle()
         self.refresh_status()
 
+    def apply_runtime_settings(self):
+        """设置保存/应用后，让字幕、pipeline 与菜单立即使用新配置。"""
+        if self.subtitle_widget:
+            self.subtitle_widget.apply_settings()
+        ok = True
+        if self.pipeline:
+            ok = self.pipeline.apply_config()
+        if self.tray_manager:
+            self.tray_manager.retranslate()
+        else:
+            self.retranslate()
+        self.sync_language()
+        self.refresh_status()
+        if not ok:
+            from gui.notification import notify_warning
+
+            notify_warning(tr("settings"), tr("settings_apply_failed"))
+
     def _open_settings(self, tab: int = 0):
         from gui.settings import SettingsDialog
         dlg = SettingsDialog(self, initial_tab=tab)
+        dlg.settings_applied.connect(self.apply_runtime_settings)
         if dlg.exec():
-            if self.subtitle_widget:
-                self.subtitle_widget.apply_settings()
-            if self.pipeline:
-                self.pipeline.apply_config()
-            if self.tray_manager:
-                self.tray_manager.retranslate()
-            else:
-                self.retranslate()
             self.sync_language()
             self.refresh_status()
 
