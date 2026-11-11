@@ -1,7 +1,5 @@
 """Shared test fixtures."""
 
-import os
-import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -46,29 +44,3 @@ def mock_config():
         cfg.audio_device = "auto"
         mock.return_value = cfg
         yield cfg
-
-
-def pytest_sessionfinish(session, exitstatus):
-    """Close Qt cleanly before interpreter shutdown (offscreen CI can exit 1 otherwise)."""
-    try:
-        from PySide6.QtWidgets import QApplication
-
-        app = QApplication.instance()
-        if app is not None:
-            app.closeAllWindows()
-            app.quit()
-            app.processEvents()
-    except Exception:
-        pass
-
-    # Windows + PySide6 occasionally crashes while finalizing Qt objects after
-    # pytest printed its summary (all passed, then exit 1, no traceback).
-    # Run after pytest's own atexit hooks but before interpreter teardown.
-    import atexit
-
-    def _hard_exit():
-        sys.stdout.flush()
-        sys.stderr.flush()
-        os._exit(int(exitstatus))
-
-    atexit.register(_hard_exit)

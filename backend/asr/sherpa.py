@@ -39,6 +39,7 @@ class SherpaStreamingASR(ASREngine):
     """
 
     is_streaming = True
+    fixed_language = "zh"
 
     # sherpa zh-14M int8 模型固定文件名
     _ENCODER = "encoder-epoch-99-avg-1.int8.onnx"
@@ -161,6 +162,13 @@ class SherpaStreamingASR(ASREngine):
             logger.debug("Sherpa ASR: %s", text)
             return text, "zh", 1.0
         return None
+
+    def prepare(self):
+        """Load the recognizer so readiness can be checked before a swap."""
+        self._load_model()
+
+    def is_ready(self) -> bool:
+        return self._recognizer is not None
 
     def set_language(self, language: str):
         # sherpa zh-14M 为固定中文模型，语言不可切换

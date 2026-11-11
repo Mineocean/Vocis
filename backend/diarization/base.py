@@ -40,8 +40,23 @@ class SpeakerDiarizer(ABC):
         ...
 
     async def assign_async(self, audio_pcm: bytes) -> Speaker | None:
-        """Async wrapper so embedding work stays off the event loop."""
-        return await asyncio.to_thread(self.assign, audio_pcm)
+        """Async wrapper so embedding work stays off the event loop.
+
+        The tracker is entered/left inside the worker thread: cancelling the
+        awaiting Task does not prove the embedding call has stopped.
+        """
+        tracker = getattr(self, "_work_tracker", None)
+        if tracker is None:
+            return await asyncio.to_thread(self.assign, audio_pcm)
+
+        def run() -> Speaker | None:
+            tracker.begin()
+            try:
+                return self.assign(audio_pcm)
+            finally:
+                tracker.end()
+
+        return await asyncio.to_thread(run)
 
     def reset(self):
         """Forget all speakers (new video / context reset)."""

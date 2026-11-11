@@ -11,6 +11,7 @@ import httpx
 
 from ..config import get_config
 from ..utils import normalize_api_url
+from ..work import tracked_async
 from .audio import pcm_to_wav
 from .base import ASREngine, ASRResult
 from .registry import register_asr
@@ -54,6 +55,7 @@ class OpenAICompatibleASR(ASREngine):
             )
         return self._client
 
+    @tracked_async
     async def transcribe_async(self, audio_pcm: bytes) -> ASRResult | None:
         if not audio_pcm:
             return None

@@ -1,202 +1,43 @@
-"""GUI wiring smoke tests (offscreen Qt).
+"""Run the offscreen Qt smoke tests in a dedicated subprocess.
 
-These catch the classic integration break: subtitle signal arity, missing
-i18n keys, or a dialog that cannot be constructed. They do not assert pixels.
+PySide6 on Windows can crash while finalizing Qt objects after pytest has
+already printed a passing summary. Keeping Qt out of the main pytest process
+makes that boundary explicit: the child prints its own summary and exits with
+pytest's real code; the parent diagnoses failures from the child output.
 """
 
 import os
+import subprocess
+import sys
+from pathlib import Path
 
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-
-import pytest
-
-pytest.importorskip("PySide6")
-
-from PySide6.QtWidgets import QApplication  # noqa: E402
-
-from backend.diarization.base import Speaker  # noqa: E402
+ROOT = Path(__file__).resolve().parents[1]
+IMPL = Path(__file__).with_name("gui_smoke_impl.py")
 
 
-@pytest.fixture(scope="module")
-def qapp():
-    app = QApplication.instance() or QApplication([])
-    yield app
+def test_gui_smoke_in_subprocess():
+    env = os.environ.copy()
+    env["QT_QPA_PLATFORM"] = "offscreen"
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    env["PYTHONPATH"] = str(ROOT) + os.pathsep + env.get("PYTHONPATH", "")
 
-
-@pytest.fixture
-def overlay(qapp):
-    from gui.subtitle_widget import SubtitleWidget
-
-    widget = SubtitleWidget()
-    yield widget
-    widget.close()
-
-
-def test_i18n_has_both_languages(qapp):
-    from gui import i18n
-
-    assert i18n._ZH.keys() == i18n._EN.keys()
-    assert i18n._ZH["app_title"]
-    assert i18n._EN["app_title"]
-
-
-def test_overlay_renders_speaker_and_texts(overlay):
-    from gui.i18n import tr
-
-    overlay.show_subtitle("你好", "Hello", Speaker(2))
-    assert overlay._original == "你好"
-    assert overlay._translation == "Hello"
-    assert overlay._speaker == Speaker(2)
-    assert overlay._pill.isVisibleTo(overlay)
-    assert tr("speaker_n", n=2) in overlay._pill.text()
-
-
-def test_overlay_uses_translation_as_primary_text(overlay):
-    overlay.apply_settings()
-    overlay.show_subtitle("原文", "Translation", Speaker(1))
-    assert overlay._trans.font().pixelSize() > overlay._orig.font().pixelSize()
-    # 字号真的生效（QSS 全局 13px 不应覆盖 label 内联字号）
-    overlay._orig.setStyleSheet("background: transparent; font-size: 13px;")
-    config = __import__("backend.config", fromlist=["get_config"]).get_config()
-    if int(config.display.font_size) != 13:
-        assert overlay._trans.font().pixelSize() == int(config.display.font_size)
-
-
-def test_overlay_hides_pill_without_speaker(overlay):
-    overlay.show_subtitle("只有原文", "", None)
-    assert overlay._speaker is None
-    assert not overlay._pill.isVisibleTo(overlay)
-    assert not overlay._trans.isVisibleTo(overlay)
-
-
-def test_final_stream_frame_starts_hide_timer(overlay):
-    overlay._hide_delay_ms = 5000
-    overlay._hide_timer.stop()
-    overlay._on_stream("原文", "译文", False, None)
-    overlay._on_stream("原文", "译文", True, None)
-    assert overlay._hide_timer.isActive()
-    overlay._hide_delay_ms = 0  # 常驻模式
-    overlay._on_stream("原文", "译文", True, None)
-    assert not overlay._hide_timer.isActive()
-
-
-def test_stream_signal_arity_and_coalescing(overlay):
-    overlay.subtitle_signal.emit("原始", "译文", Speaker(1))
-    assert overlay._original == "原始"
-
-    overlay._on_stream("流式原文", "流式", False, Speaker(3))
-    assert overlay._pending is not None  # 合并到 20fps 定时器，不是立即重排
-    overlay._on_stream("流式原文", "流式完成", True, Speaker(3))
-    assert overlay._pending is None
-    assert overlay._translation == "流式完成"
-
-
-def test_main_window_constructs_and_tracks_speakers(qapp):
-    from gui.main_window import MainWindow
-
-    window = MainWindow(pipeline=None, subtitle_widget=None)
-    try:
-        window._note_speaker(Speaker(1))
-        window._note_speaker(Speaker(2))
-        window._note_speaker(Speaker(1))  # 重复不新增
-        assert window._speaker_order == [1, 2]
-        assert set(window._chips) == {1, 2}
-        window.retranslate()
-        window.refresh_status()
-        assert window._val_target.text()  # 主窗口能看到「翻成什么」
-        assert window._enable_diar_btn is not None
-    finally:
-        window.close()
-
-
-def test_settings_dialog_constructs(qapp):
-    from gui.settings import SettingsDialog
-    from gui.widgets import ThemedCheckBox
-
-    dialog = SettingsDialog()
-    try:
-        providers = [dialog._tr_provider.itemData(i) for i in range(dialog._tr_provider.count())]
-        assert "deepseek" in providers
-        assert "custom" in providers
-        assert dialog._diar_backend.count() == 2
-        assert dialog._tr_model.currentText()
-        assert isinstance(dialog._check_stream, ThemedCheckBox)
-    finally:
-        dialog.close()
-
-
-def test_settings_dialog_opens_requested_tab(qapp):
-    from gui.settings import SettingsDialog
-
-    dialog = SettingsDialog(initial_tab=2)
-    try:
-        assert dialog._tabs.currentIndex() == 2
-    finally:
-        dialog.close()
-
-
-def test_settings_save_emits_signal_and_syncs_whisper_path(qapp, monkeypatch):
-    from gui import settings as settings_module
-    from gui.settings import SettingsDialog
-
-    dialog = SettingsDialog()
-    captured: dict[str, str] = {}
-    fired = []
-    dialog.settings_applied.connect(lambda: fired.append(True))
-    monkeypatch.setattr(settings_module, "read_env_file", lambda: {})
-    monkeypatch.setattr(settings_module, "write_env_file", lambda env: captured.update(env))
-    monkeypatch.setattr(settings_module, "reload_config", lambda: None)
-    monkeypatch.setattr(settings_module, "reload_language", lambda: None)
-    monkeypatch.setattr("dotenv.load_dotenv", lambda *args, **kwargs: None)
-    try:
-        dialog._asr_local_radio.setChecked(True)
-        dialog._local_backend.setCurrentText("whisper")
-        dialog._whisper_model.setCurrentText("base")
-        # 手工把路径改成旧模型的目录，保存时应跟随所选模型
-        dialog._whisper_path.setText("models/faster-whisper-tiny")
-        dialog._save()
-    finally:
-        dialog.close()
-
-    assert captured["WHISPER_MODEL"] == "base"
-    assert captured["WHISPER_MODEL_PATH"] == "models/faster-whisper-base"
-    assert fired == [True]
-
-
-def test_wizard_remember_off_applies_in_memory_only(qapp, monkeypatch):
-    from gui import setup_wizard as wizard_module
-
-    wizard = wizard_module.SetupWizard()
-    written = []
-    monkeypatch.setattr(wizard_module, "read_env_file", lambda: {})
-    monkeypatch.setattr(wizard_module, "write_env_file", lambda env: written.append(env))
-    before_env = dict(os.environ)
-    try:
-        wizard._remember.setChecked(False)
-        keys = [wizard._provider.itemData(i) for i in range(wizard._provider.count())]
-        wizard._provider.setCurrentIndex(keys.index("deepseek"))
-        wizard._key.setText("session-key")
-        wizard._save()
-        assert written == []  # 未勾选“记住”不落盘
-        assert os.environ["TRANSLATOR_API_KEY"] == "session-key"  # 但本次会话生效
-    finally:
-        wizard.close()
-        os.environ.clear()
-        os.environ.update(before_env)
-
-
-def test_wizard_blocks_empty_key(qapp):
-    from gui.setup_wizard import SetupWizard
-
-    wizard = SetupWizard()
-    try:
-        wizard._stack.setCurrentIndex(1)
-        wizard._provider.setCurrentIndex(
-            [wizard._provider.itemData(i) for i in range(wizard._provider.count())].index("deepseek")
-        )
-        wizard._key.clear()
-        wizard._go_next()
-        assert wizard._stack.currentIndex() == 1
-        assert not wizard._key_err.isHidden()
-    finally:
-        wizard.close()
+    # The child runs pytest in-process, prints its summary, then hard-exits
+    # with pytest's actual code. The hard exit is scoped to this Qt child only;
+    # the parent process keeps normal pytest cleanup and failure reporting.
+    code = (
+        "import os, sys, pytest; "
+        f"rc = pytest.main(['-q', '-p', 'no:cacheprovider', r'{IMPL}']); "
+        "sys.stdout.flush(); sys.stderr.flush(); os._exit(int(rc))"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=240,
+    )
+    assert proc.returncode == 0, (
+        f"GUI subprocess failed ({proc.returncode})\n"
+        f"STDOUT:\n{proc.stdout}\nSTDERR:\n{proc.stderr}"
+    )

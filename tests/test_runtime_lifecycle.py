@@ -145,6 +145,15 @@ def test_pipeline_stop_is_idempotent_and_finishes():
     assert pipeline._loop_thread is None
 
 
+def test_pipeline_stop_while_paused_is_bounded():
+    pipeline = _build_pipeline()
+    assert pipeline.start() is True
+    pipeline.pause()
+    pipeline.stop()
+    assert pipeline._stop_done is True
+    assert pipeline._loop is None
+
+
 def test_start_failure_cleans_capture():
     pipeline = _build_pipeline()
 

@@ -2,12 +2,18 @@
 
 import asyncio
 import threading
+import time
 from collections import deque
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from backend.diarization.base import Speaker
+import pytest
+
+import backend.pipeline as pipeline_module
+from backend.asr.base import ASREngine
+from backend.diarization.base import Speaker, SpeakerDiarizer
 from backend.pipeline import SubtitlePipeline, _SegmentJob
+from backend.work import WorkTracker
 
 
 class FakeASR:
@@ -99,7 +105,111 @@ def base_pipeline():
     p._loop = None
     p._stopping = False
     p._stop_done = False
+    p._stop_had_pending = False
+    p._asr_queue = asyncio.Queue()
+    p._translate_queue = asyncio.Queue()
+    p._work_trackers = []
+    p._tracked_components = []
+    p._closed_components = set()
+    p._close_lock = threading.Lock()
+    p._vad_tracker = WorkTracker()
+    p._apply_epoch = 0
+    p._track_component(p.asr)
     return p
+
+
+def cfg_for(target="中文", skip=True):
+    cfg = fake_cfg()
+    cfg.translator.target_language = target
+    cfg.asr.skip_translate_when_same_lang = skip
+    return cfg
+
+
+class BlockingASR(ASREngine):
+    """Real thread work that outlives cancellation of the awaiting Task."""
+
+    backend = "whisper"
+
+    def __init__(self):
+        self.entered = threading.Event()
+        self.release = threading.Event()
+        self.closed = 0
+
+    def transcribe(self, audio):
+        self.entered.set()
+        assert self.release.wait(5.0)
+        return ("later", "en", 1.0)
+
+    def close(self):
+        self.closed += 1
+
+
+class IdleASR(ASREngine):
+    backend = "whisper"
+
+    def __init__(self):
+        self.closed = 0
+
+    def transcribe(self, audio):
+        return None
+
+    def close(self):
+        self.closed += 1
+
+
+class BlockingDiarizer(SpeakerDiarizer):
+    def __init__(self):
+        self.entered = threading.Event()
+        self.release = threading.Event()
+        self.closed = 0
+
+    def assign(self, audio_pcm):
+        self.entered.set()
+        assert self.release.wait(5.0)
+        return Speaker(1)
+
+    def close(self):
+        self.closed += 1
+
+
+class FailingStreamASR(ASREngine):
+    backend = "sherpa"
+    is_streaming = True
+    fixed_language = "zh"
+
+    def __init__(self):
+        self.closed = 0
+        self.started = 0
+
+    def transcribe(self, audio):
+        return None
+
+    def start_stream(self):
+        self.started += 1
+        raise RuntimeError("missing model files")
+
+    def close(self):
+        self.closed += 1
+
+
+class NotReadyASR(ASREngine):
+    backend = "whisper"
+
+    def __init__(self):
+        self.closed = 0
+        self.prepared = 0
+
+    def prepare(self):
+        self.prepared += 1
+
+    def is_ready(self) -> bool:
+        return False
+
+    def transcribe(self, audio):
+        return None
+
+    def close(self):
+        self.closed += 1
 
 
 def speech_audio(seconds=1.0):
@@ -140,7 +250,17 @@ def fake_cfg(**asr_overrides):
         incremental_interval=0.1,
         incremental_max_seconds=5.0,
         stream_sentence_chars=8,
+        display=SimpleNamespace(stream_translation=True),
     )
+
+
+@pytest.fixture(autouse=True)
+def deterministic_config():
+    """Every decision that reads config must be independent of the local .env."""
+    cfg = fake_cfg()
+    cfg.translator.target_language = "中文"
+    with patch("backend.pipeline.get_config", return_value=cfg):
+        yield cfg
 
 
 # ── 普通模式 ──────────────────────────────────────────
@@ -208,7 +328,10 @@ def test_short_segment_is_finalized_before_first_periodic_tick():
     got = []
     p._on_subtitle_stream = lambda *args: got.append(args)
 
-    asyncio.run(p._finalize_segment(_SegmentJob(audio=speech_audio(0.3))))
+    cfg = fake_cfg()
+    cfg.translator.target_language = "英文"
+    with patch("backend.pipeline.get_config", return_value=cfg):
+        asyncio.run(p._finalize_segment(_SegmentJob(audio=speech_audio(0.3))))
     assert got == [("嗨", "TR:嗨", True, None)]
 
 
@@ -270,7 +393,10 @@ def test_non_streaming_short_segment_gets_final_subtitle():
     got = []
     p._on_subtitle_stream = lambda *args: got.append(args)
 
-    asyncio.run(p._finalize_segment(_SegmentJob(audio=speech_audio())))
+    cfg = fake_cfg()
+    cfg.translator.target_language = "英文"
+    with patch("backend.pipeline.get_config", return_value=cfg):
+        asyncio.run(p._finalize_segment(_SegmentJob(audio=speech_audio())))
     assert got == [("短句", "TR:短句", True, None)]
     assert p.asr.calls == [speech_audio()]
 
@@ -405,6 +531,342 @@ def test_async_stop_flushes_pending_translation():
 
     asyncio.run(p._async_stop())
     assert got == [("bye", "TR:bye", None)]
+
+
+# ── 最终确认的逐段语言决策 ────────────────────────────
+
+def test_final_segment_same_language_skips_translation():
+    p = base_pipeline()
+    p.asr = FakeASR([("短句", "zh", 0.99)])
+    p.translator = FakeTranslator()
+    got = []
+    p._on_subtitle_stream = lambda *args: got.append(args)
+
+    with patch("backend.pipeline.get_config", return_value=cfg_for("中文")):
+        asyncio.run(p._finalize_segment(_SegmentJob(audio=speech_audio())))
+
+    assert p.translator.calls == []
+    assert got == [("短句", "", True, None)]
+
+
+def test_final_segment_unknown_or_low_confidence_translates():
+    for result in (("短句", None, 0.0), ("短句", "zh", 0.2)):
+        p = base_pipeline()
+        p.asr = FakeASR([result])
+        p.translator = FakeTranslator()
+        got = []
+        p._on_subtitle_stream = lambda *args: got.append(args)
+        with patch("backend.pipeline.get_config", return_value=cfg_for("中文")):
+            asyncio.run(p._finalize_segment(_SegmentJob(audio=speech_audio())))
+        assert p.translator.calls == ["短句"]
+        assert got[-1][0] == "短句"
+
+
+def test_final_segment_translates_when_skip_disabled():
+    p = base_pipeline()
+    p.asr = FakeASR([("短句", "zh", 0.99)])
+    p.translator = FakeTranslator()
+    with patch("backend.pipeline.get_config", return_value=cfg_for("中文", skip=False)):
+        asyncio.run(p._finalize_segment(_SegmentJob(audio=speech_audio())))
+    assert p.translator.calls == ["短句"]
+
+
+def test_streaming_short_segment_without_partial_uses_fixed_language():
+    class FixedStream(FakeASR):
+        is_streaming = True
+        fixed_language = "zh"
+
+        def end_stream(self):
+            return "嗨"
+
+    p = base_pipeline()
+    p.asr = FixedStream()
+    p._track_component(p.asr)
+    p._asr_streaming = True
+    p.translator = FakeTranslator()
+    got = []
+    p._on_subtitle_stream = lambda *args: got.append(args)
+
+    with patch("backend.pipeline.get_config", return_value=cfg_for("中文")):
+        asyncio.run(p._finish_stream_segment())
+        assert p._segment_jobs[0].language == "zh"
+        assert p._segment_jobs[0].language_prob == 1.0
+        p._segment_end.set()
+        asyncio.run(p._drain_segment_jobs())
+
+    assert p.translator.calls == []
+    assert got[-1] == ("嗨", "", True, None)
+
+
+def test_consecutive_segments_keep_independent_language_decisions():
+    p = base_pipeline()
+    p._asr_streaming = True
+    p.translator = FakeTranslator()
+    got = []
+    p._on_subtitle_stream = lambda *args: got.append(args)
+    with p._segment_lock:
+        p._segment_jobs.append(
+            _SegmentJob(final_text="hello", language="en", language_prob=0.99)
+        )
+        p._segment_jobs.append(
+            _SegmentJob(final_text="你好", language="zh", language_prob=0.99)
+        )
+    p._segment_end.set()
+
+    with patch("backend.pipeline.get_config", return_value=cfg_for("中文")):
+        asyncio.run(p._drain_segment_jobs())
+
+    finals = [e for e in got if e[2]]
+    assert [f[0] for f in finals] == ["hello", "你好"]
+    assert finals[0][1] == "TR:hello"
+    assert finals[1][1] == ""
+    assert p.translator.calls == ["hello"]
+
+
+# ── 停止/配置切换：真实工作生命周期 ───────────────────
+
+def test_stop_defers_close_while_inference_thread_alive(monkeypatch):
+    monkeypatch.setattr(pipeline_module, "_STOP_TASK_TIMEOUT", 0.05)
+    monkeypatch.setattr(pipeline_module, "_STOP_CANCEL_TIMEOUT", 0.05)
+    monkeypatch.setattr(pipeline_module, "_STOP_WORK_TIMEOUT", 0.1)
+    p = base_pipeline()
+    asr = BlockingASR()
+    p.asr = asr
+    p._work_trackers.clear()
+    p._tracked_components.clear()
+    p._closed_components.clear()
+    p._track_component(asr)
+
+    async def run():
+        task = asyncio.create_task(asr.transcribe_async(b"x"))
+        p._tasks = [task]
+        await asyncio.to_thread(asr.entered.wait, 1.0)
+        await p._async_stop()
+        assert asr.closed == 0  # bottom work still running: must not close
+        assert p._stop_had_pending is True
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        asr.release.set()  # 让底层线程结束，避免 asyncio.run 关闭 executor 时等待
+
+    try:
+        asyncio.run(run())
+    finally:
+        asr.release.set()
+    deadline = time.monotonic() + 3.0
+    while asr.closed == 0 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert asr.closed == 1  # released exactly once after the thread exits
+
+
+def test_stop_defers_diarizer_while_embedding_thread_alive(monkeypatch):
+    monkeypatch.setattr(pipeline_module, "_STOP_TASK_TIMEOUT", 0.05)
+    monkeypatch.setattr(pipeline_module, "_STOP_CANCEL_TIMEOUT", 0.05)
+    monkeypatch.setattr(pipeline_module, "_STOP_WORK_TIMEOUT", 0.1)
+    p = base_pipeline()
+    diarizer = BlockingDiarizer()
+    p.diarizer = diarizer
+    p._work_trackers.clear()
+    p._tracked_components.clear()
+    p._closed_components.clear()
+    p._track_component(p.asr)
+    p._track_component(diarizer)
+
+    async def run():
+        task = asyncio.create_task(diarizer.assign_async(b"x"))
+        p._tasks = [task]
+        await asyncio.to_thread(diarizer.entered.wait, 1.0)
+        await p._async_stop()
+        assert diarizer.closed == 0
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        diarizer.release.set()
+
+    try:
+        asyncio.run(run())
+    finally:
+        diarizer.release.set()
+    deadline = time.monotonic() + 3.0
+    while diarizer.closed == 0 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert diarizer.closed == 1
+
+
+def test_wait_for_work_includes_vad_tracker():
+    p = base_pipeline()
+    p._vad_tracker.begin()
+    try:
+        assert p._wait_for_work(0.05) is False
+    finally:
+        p._vad_tracker.end()
+    assert p._wait_for_work(0.05) is True
+
+
+def test_stop_defers_retired_instance_until_its_work_finishes(monkeypatch):
+    monkeypatch.setattr(pipeline_module, "_STOP_TASK_TIMEOUT", 0.05)
+    monkeypatch.setattr(pipeline_module, "_STOP_CANCEL_TIMEOUT", 0.05)
+    monkeypatch.setattr(pipeline_module, "_STOP_WORK_TIMEOUT", 0.1)
+    p = base_pipeline()
+    old_asr = BlockingASR()
+    new_asr = IdleASR()
+    p.asr = new_asr
+    p._retired = [old_asr]
+    p._work_trackers.clear()
+    p._tracked_components.clear()
+    p._closed_components.clear()
+    p._track_component(new_asr)
+    p._track_component(old_asr)
+
+    async def run():
+        task = asyncio.create_task(old_asr.transcribe_async(b"x"))
+        p._tasks = [task]
+        await asyncio.to_thread(old_asr.entered.wait, 1.0)
+        await p._async_stop()
+        assert old_asr.closed == 0
+        assert new_asr.closed == 1
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        old_asr.release.set()
+
+    try:
+        asyncio.run(run())
+    finally:
+        old_asr.release.set()
+    deadline = time.monotonic() + 3.0
+    while old_asr.closed == 0 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert old_asr.closed == 1
+
+
+def test_apply_config_aborts_when_new_stream_start_fails():
+    p = base_pipeline()
+    old_asr = FakeASR([])
+    p.asr = old_asr
+    p._asr_signature = p._make_asr_signature(fake_cfg())
+    p._diar_signature = p._make_diar_signature(fake_cfg())
+    broken = FailingStreamASR()
+    changed = fake_cfg(backend="sherpa", api_key="key-2")
+
+    with (
+        patch("backend.pipeline.create_translator", return_value=FakeTranslator()),
+        patch("backend.pipeline.create_asr", return_value=broken),
+    ):
+        ok = asyncio.run(p._async_apply_config(changed, live=True))
+
+    assert ok is False
+    assert p.asr is old_asr
+    assert p._asr_signature != p._make_asr_signature(changed)
+    assert broken.started == 1
+    assert broken.closed == 1
+    assert old_asr not in p._retired
+
+
+def test_apply_config_aborts_when_new_engine_not_ready():
+    p = base_pipeline()
+    old_asr = FakeASR([])
+    p.asr = old_asr
+    p._asr_signature = p._make_asr_signature(fake_cfg())
+    p._diar_signature = p._make_diar_signature(fake_cfg())
+    not_ready = NotReadyASR()
+    changed = fake_cfg(api_key="key-2")
+
+    with (
+        patch("backend.pipeline.create_translator", return_value=FakeTranslator()),
+        patch("backend.pipeline.create_asr", return_value=not_ready),
+    ):
+        ok = asyncio.run(p._async_apply_config(changed, live=True))
+
+    assert ok is False
+    assert p.asr is old_asr
+    assert not_ready.prepared == 1
+    assert not_ready.closed == 1
+
+
+def test_stale_apply_does_not_commit_new_engine():
+    p = base_pipeline()
+    old_asr = FakeASR([])
+    p.asr = old_asr
+    p._apply_epoch = 5
+
+    with patch("backend.pipeline.create_asr") as create_asr:
+        ok = asyncio.run(p._async_apply_config(fake_cfg(api_key="key-2"), live=True, epoch=4))
+
+    assert ok is False
+    assert p.asr is old_asr
+    assert not create_asr.called  # 过期切换在创建新引擎前已中止
+
+
+def test_apply_config_timeout_does_not_commit_late_switch(monkeypatch):
+    monkeypatch.setattr(pipeline_module, "_APPLY_TIMEOUT", 0.1)
+
+    class SlowReadyASR(ASREngine):
+        backend = "whisper"
+
+        def __init__(self):
+            self.started = threading.Event()
+            self.release = threading.Event()
+            self.closed = 0
+
+        def prepare(self):
+            self.started.set()
+            assert self.release.wait(5.0)
+
+        def transcribe(self, audio):
+            return None
+
+        def close(self):
+            self.closed += 1
+
+    p = base_pipeline()
+    old_asr = FakeASR([])
+    p.asr = old_asr
+    cfg = fake_cfg()
+    p._asr_signature = p._make_asr_signature(cfg)
+    p._diar_signature = p._make_diar_signature(cfg)
+    changed = fake_cfg(api_key="key-2")
+    created = []
+    slow = SlowReadyASR()
+
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_forever, daemon=True)
+    thread.start()
+    p._loop = loop
+    p._loop_thread = thread
+
+    def make_asr():
+        created.append(slow)
+        return slow
+
+    try:
+        with (
+            patch("backend.pipeline.reload_config", return_value=changed),
+            patch("backend.pipeline.create_translator", return_value=FakeTranslator()),
+            patch("backend.pipeline.create_asr", side_effect=make_asr),
+        ):
+            ok = p.apply_config()
+            assert ok is False
+            assert p.asr is old_asr
+            assert slow.closed == 0  # 晚到协程仍卡在 prepare，不能提前释放
+            slow.release.set()
+            deadline = time.monotonic() + 3.0
+            while slow.closed == 0 and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert slow.closed == 1  # 晚到切换被丢弃，新实例被清理
+            assert p.asr is old_asr
+            assert created == [slow]
+    finally:
+        slow.release.set()
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout=2.0)
+        if not loop.is_closed():
+            loop.close()
+        p._loop = None
+        p._loop_thread = None
 
 
 # ── 配置切换 ──────────────────────────────────────────

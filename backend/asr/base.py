@@ -2,6 +2,7 @@
 
 import asyncio
 from abc import ABC, abstractmethod
+from typing import Any
 
 # language 允许 None：部分云端后端（MiMo 等）不返回检测语言
 ASRResult = tuple[str, str | None, float]
@@ -24,14 +25,42 @@ class ASREngine(ABC):
     #: True 表示实现了下面的流式接口
     is_streaming: bool = False
 
+    #: 固定输出语言（如 Sherpa zh 模型）；None 表示依赖检测结果
+    fixed_language: str | None = None
+
+    #: pipeline 注入，用来追踪真实推理线程何时结束
+    _work_tracker: Any = None
+
     @abstractmethod
     def transcribe(self, audio_pcm: bytes) -> ASRResult | None:
         """Convert PCM audio to text with detected language."""
         ...
 
+    def _tracked_transcribe(self, audio_pcm: bytes) -> ASRResult | None:
+        """Run transcribe while marking the worker thread as busy."""
+        tracker = getattr(self, "_work_tracker", None)
+        if tracker is None:
+            return self.transcribe(audio_pcm)
+        tracker.begin()
+        try:
+            return self.transcribe(audio_pcm)
+        finally:
+            tracker.end()
+
     async def transcribe_async(self, audio_pcm: bytes) -> ASRResult | None:
-        """Async version of transcribe. Runs sync version in thread pool."""
-        return await asyncio.to_thread(self.transcribe, audio_pcm)
+        """Async version of transcribe, tracked by the component work tracker."""
+        return await asyncio.to_thread(self._tracked_transcribe, audio_pcm)
+
+    def prepare(self):
+        """Load/validate whatever the backend needs before it is committed.
+
+        Streaming backends are prepared by start_stream(); lazy non-streaming
+        backends (Whisper) override this to load the model now.
+        """
+
+    def is_ready(self) -> bool:
+        """Return True when prepare()/start_stream() reached a usable state."""
+        return True
 
     # ── 流式接口（非流式后端不应调用） ──────────────
 

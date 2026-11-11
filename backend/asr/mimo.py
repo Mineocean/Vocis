@@ -11,6 +11,7 @@ from ..config import get_config
 from ..providers.presets import asr_preset
 from ..utils import normalize_api_url
 from .audio import pcm_to_wav
+from ..work import tracked_async
 from .base import ASREngine, ASRResult
 from .registry import register_asr
 
@@ -54,6 +55,7 @@ class MiMoASR(ASREngine):
     def set_language(self, language: str):
         self.language = language
 
+    @tracked_async
     async def transcribe_async(self, audio_pcm: bytes) -> ASRResult | None:
         if not audio_pcm:
             return None

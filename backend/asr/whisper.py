@@ -116,6 +116,14 @@ class WhisperASR(ASREngine):
     def set_language(self, language: str):
         self._language = None if language == "auto" else language
 
+    def prepare(self):
+        """Whisper loads lazily on first transcribe; force-load now so config
+        switching can verify the model is actually usable before committing."""
+        self._load_model()
+
+    def is_ready(self) -> bool:
+        return self._model is not None
+
     def transcribe(self, audio_pcm: bytes) -> ASRResult | None:
         if not audio_pcm:
             return None

@@ -22,8 +22,10 @@ import difflib
 import logging
 import re
 import threading
+import time
 from collections import deque
 from collections.abc import Callable
+from concurrent.futures import TimeoutError as FutureTimeout
 from dataclasses import dataclass
 
 import numpy as np
@@ -34,6 +36,7 @@ from .config import get_config, reload_config
 from .diarization import Speaker, create_diarizer
 from .translator import create_translator
 from .vad import VoiceActivityDetector
+from .work import WorkTracker
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +52,10 @@ _MAX_DIAR_BYTES = 12 * 16000 * 2
 # 停止时等待任务自行退出的时间（秒）；超时后取消并再等一段时间
 _STOP_TASK_TIMEOUT = 3.0
 _STOP_CANCEL_TIMEOUT = 2.0
+# 停止时等待真实推理工作（线程/嵌入）结束的上限；超时后延迟释放组件
+_STOP_WORK_TIMEOUT = 5.0
+# 配置切换等待上限；超时后使晚到的切换失效
+_APPLY_TIMEOUT = 10.0
 
 # 发送最终帧前翻译残句的上限（秒）；超时仍发出原文
 _FINAL_TRANSLATE_TIMEOUT = 15.0
@@ -66,6 +73,8 @@ class _SegmentJob:
     audio: bytes = b""              # 非流式后端：本段尚未识别的音频快照
     diar_audio: bytes = b""         # 本段用于说话人判定的音频
     speaker: Speaker | None = None  # 段内已经判定的说话人（可能为 None）
+    language: str | None = None     # 本段识别语言（流式固定语言 / 段内检测）
+    language_prob: float = 0.0      # 本段语言置信度
 
 
 class SubtitlePipeline:
@@ -105,6 +114,17 @@ class SubtitlePipeline:
         self._stop_had_pending = False
         # 旧组件不在任务运行中关闭；停止时统一释放
         self._retired: list[object] = []
+
+        # 真实推理工作追踪：每个 ASR/说话人实例一个，组件关闭前必须空闲
+        self._work_trackers: list[WorkTracker] = []
+        self._tracked_components: list[object] = []
+        self._closed_components: set[int] = set()
+        self._close_lock = threading.Lock()
+        self._vad_tracker = WorkTracker()
+        self._track_component(self.asr)
+        self._track_component(self.diarizer)
+        # 配置切换令牌：超时后递增，晚到的协程不得提交
+        self._apply_epoch = 0
 
         cfg = get_config()
         self._language = cfg.asr.language
@@ -165,6 +185,108 @@ class SubtitlePipeline:
         d = cfg.diarization
         return (d.enabled, d.backend, d.max_speakers, d.threshold, d.min_seconds, d.model_path)
 
+    # ── 真实工作追踪 / 组件释放 ───────────────────────
+
+    def _track_component(self, component) -> WorkTracker | None:
+        if component is None:
+            return None
+        tracker = WorkTracker()
+        try:
+            setattr(component, "_work_tracker", tracker)
+        except Exception:
+            return None
+        self._work_trackers.append(tracker)
+        self._tracked_components.append(component)
+        return tracker
+
+    def _close_component(self, component) -> bool:
+        """Close one component only when its real work tracker is idle."""
+        if component is None:
+            return True
+        with self._close_lock:
+            if id(component) in self._closed_components:
+                return True
+        tracker = getattr(component, "_work_tracker", None)
+        if tracker is not None and tracker.busy():
+            return False
+        try:
+            close = getattr(component, "close", None)
+            if callable(close):
+                close()
+        except Exception:
+            logger.debug("Closing component failed", exc_info=True)
+        with self._close_lock:
+            self._closed_components.add(id(component))
+        return True
+
+    def _defer_close(self, components: list[object]):
+        """Release components after their in-flight work finishes."""
+
+        def run():
+            # 守护线程：等真实工作结束后再释放；进程退出时不会阻塞。
+            # 不用固定超时跳过 close，否则会形成长期未释放的模型。
+            for component in components:
+                tracker = getattr(component, "_work_tracker", None)
+                if tracker is not None:
+                    tracker.wait_idle()
+                self._close_component(component)
+
+        threading.Thread(target=run, name="vocis-deferred-close", daemon=True).start()
+
+    def _release_components(self) -> list[object]:
+        """Close idle components now; return those deferred due to live work."""
+        components = [self.translator, self.asr, self.diarizer, *self._retired]
+        deferred: list[object] = []
+        seen: set[int] = set()
+        for component in components:
+            if component is None or id(component) in seen:
+                continue
+            seen.add(id(component))
+            if not self._close_component(component):
+                deferred.append(component)
+        if deferred:
+            logger.warning(
+                "Deferring close of %d component(s): inference work still active",
+                len(deferred),
+            )
+            self._defer_close(deferred)
+        self._retired.clear()
+        return deferred
+
+    def _wait_for_work(self, timeout: float) -> bool:
+        deadline = time.monotonic() + timeout
+        trackers = list(self._work_trackers) + [self._vad_tracker]
+        for tracker in trackers:
+            remaining = max(0.0, deadline - time.monotonic())
+            if not tracker.wait_idle(timeout=remaining):
+                return False
+        return True
+
+    async def _call_component(self, component, fn, *args):
+        """Run a sync component call in a thread, tracking the real work."""
+        tracker = getattr(component, "_work_tracker", None)
+
+        def run():
+            if tracker is not None:
+                tracker.begin()
+            try:
+                return fn(*args)
+            finally:
+                if tracker is not None:
+                    tracker.end()
+
+        return await asyncio.to_thread(run)
+
+    async def _vad_process(self, chunk: np.ndarray):
+        def run():
+            self._vad_tracker.begin()
+            try:
+                return self.vad.process_chunk(chunk)
+            finally:
+                self._vad_tracker.end()
+
+        return await asyncio.to_thread(run)
+
     def _start_event_loop(self):
         """Run asyncio event loop in a dedicated thread."""
         asyncio.set_event_loop(self._loop)
@@ -197,13 +319,8 @@ class SubtitlePipeline:
         """启动失败：停止采集、释放组件并回收事件循环线程。"""
         self._running.clear()
         self.capture.stop()
-        for component in (self.translator, self.asr, self.diarizer):
-            try:
-                close = getattr(component, "close", None)
-                if callable(close):
-                    close()
-            except Exception:
-                logger.debug("Closing component after failed start failed", exc_info=True)
+        if self._release_components():
+            self._stop_had_pending = True
         loop = self._loop
         if loop is not None and loop.is_running():
             loop.call_soon_threadsafe(loop.stop)
@@ -241,6 +358,8 @@ class SubtitlePipeline:
             logger.debug("Pipeline stop already in progress")
             return
         self._stopping = True
+        # 作废仍在运行的 apply_config，避免停止过程中晚到切换
+        self._apply_epoch += 1
         loop = self._loop
         thread = self._loop_thread
         try:
@@ -260,10 +379,10 @@ class SubtitlePipeline:
                     logger.error("Event loop thread did not exit within 5s")
         finally:
             self.capture.stop()
-            if self._stop_had_pending:
-                logger.warning("Skipping retired component close: background work still running")
-            else:
-                self._close_retired()
+            # _async_stop 已处理过 release；只有它没跑到时（超时/异常）才补一次，
+            # 避免对同一个忙碌组件启动两个延迟释放线程。
+            if not self._stop_had_pending and self._release_components():
+                self._stop_had_pending = True
             if loop is not None and not self._stop_had_pending and not loop.is_closed():
                 try:
                     loop.close()
@@ -327,13 +446,17 @@ class SubtitlePipeline:
             except (asyncio.CancelledError, Exception):
                 pass
 
+        # 等待真实线程/嵌入工作结束；Task 已取消不等于底层推理已退出。
+        # 超时也不直接 close，而是让 _release_components 延迟释放。
+        if not await asyncio.to_thread(self._wait_for_work, _STOP_WORK_TIMEOUT):
+            self._stop_had_pending = True
+            logger.warning("Inference work still active after stop timeout; deferring component close")
         if pending:
             self._stop_had_pending = True
             logger.warning(
-                "Skipping component close: %d background task(s) may still be using them",
+                "%d background task(s) still pending; component close will be deferred",
                 len(pending),
             )
-            return
 
         # 尽力把 ASR worker 在退出前转写出的最后几段翻译并显示完（有时间上限）
         await self._drain_pending_translations()
@@ -342,15 +465,8 @@ class SubtitlePipeline:
             await self.translator.close_async()
         except Exception:
             logger.exception("Closing translator failed")
-        try:
-            self.asr.close()
-        except Exception:
-            logger.exception("Closing ASR failed")
-        if self.diarizer is not None:
-            try:
-                self.diarizer.close()
-            except Exception:
-                logger.exception("Closing diarizer failed")
+        if self._release_components():
+            self._stop_had_pending = True
 
     async def _drain_pending_translations(self, timeout: float = 2.0):
         """停止前把翻译队列中已识别的内容处理完，最多等待 timeout 秒。"""
@@ -373,14 +489,10 @@ class SubtitlePipeline:
                 return
 
     def _close_retired(self):
-        """停止后释放切换配置时保留的旧组件。"""
+        """停止后释放切换配置时保留的旧组件（忙碌时延迟释放）。"""
         for obj in self._retired:
-            try:
-                close = getattr(obj, "close", None)
-                if callable(close):
-                    close()
-            except Exception:
-                logger.debug("Closing retired component failed", exc_info=True)
+            if not self._close_component(obj):
+                self._defer_close([obj])
         self._retired.clear()
 
     @staticmethod
@@ -410,10 +522,16 @@ class SubtitlePipeline:
         self.capture.set_enabled(True)
         self.vad.reset()
         if self._running.is_set() and self._asr_streaming:
+            tracker = getattr(self.asr, "_work_tracker", None)
+            if tracker is not None:
+                tracker.begin()
             try:
                 self.asr.start_stream()
             except Exception:
                 logger.exception("Failed to restart streaming ASR")
+            finally:
+                if tracker is not None:
+                    tracker.end()
         self._reset_incremental()
         logger.info("Pipeline resumed")
 
@@ -425,23 +543,36 @@ class SubtitlePipeline:
     def apply_config(self) -> bool:
         """重新加载配置并安全重建组件；返回是否全部成功。"""
         cfg = reload_config()
+        self._apply_epoch += 1
+        epoch = self._apply_epoch
         loop = self._loop
         if loop is not None and loop.is_running():
+            future = asyncio.run_coroutine_threadsafe(
+                self._async_apply_config(cfg, live=True, epoch=epoch), loop
+            )
             try:
-                future = asyncio.run_coroutine_threadsafe(
-                    self._async_apply_config(cfg, live=True), loop
-                )
-                return bool(future.result(timeout=10.0))
+                return bool(future.result(timeout=_APPLY_TIMEOUT))
+            except FutureTimeout:
+                # 让仍在运行的协程在下一个检查点放弃提交，避免晚到切换
+                self._apply_epoch += 1
+                future.cancel()
+                logger.error("apply_config timed out after %.1fs; late swap aborted", _APPLY_TIMEOUT)
+                return False
             except Exception:
                 logger.exception("apply_config failed")
                 return False
         try:
-            return bool(asyncio.run(self._async_apply_config(cfg, live=False)))
+            return bool(asyncio.run(self._async_apply_config(cfg, live=False, epoch=epoch)))
         except Exception:
             logger.exception("apply_config failed")
             return False
 
-    async def _async_apply_config(self, cfg, live: bool) -> bool:
+    def _apply_is_stale(self, epoch: int | None) -> bool:
+        return epoch is not None and epoch != self._apply_epoch
+
+    async def _async_apply_config(self, cfg, live: bool, epoch: int | None = None) -> bool:
+        if self._apply_is_stale(epoch):
+            return False
         self._language = cfg.asr.language
         self.incremental_enabled = cfg.incremental_enabled
         self._incremental_interval = cfg.incremental_interval
@@ -449,16 +580,11 @@ class SubtitlePipeline:
         self._stream_sentence_chars = cfg.stream_sentence_chars
         ok = True
 
-        # 翻译客户端：总是重建（廉价、懒连接），换提供商/目标语言后缓存不串味
+        # 翻译客户端：先创建，等 ASR 就绪/未超时后再提交，避免超时后仍然切换
+        old_translator = self.translator
+        new_translator = None
         try:
-            old_translator = self.translator
             new_translator = create_translator()
-            self.translator = new_translator
-            self._retire(old_translator, live)
-            logger.info(
-                "Translator: %s (%s @ %s)",
-                cfg.translator.provider, cfg.translator.model, cfg.translator.base_url,
-            )
         except Exception:
             logger.exception("Failed to rebuild translator, keeping previous one")
             ok = False
@@ -466,6 +592,7 @@ class SubtitlePipeline:
         # ASR：所有影响引擎构建的字段变了才重建
         signature = self._make_asr_signature(cfg)
         if signature != self._asr_signature:
+            new_asr = None
             try:
                 new_asr = create_asr()
                 actual_backend = getattr(new_asr, "backend", "") or cfg.asr.backend
@@ -474,23 +601,49 @@ class SubtitlePipeline:
                         "ASR rebuild fell back to '%s' instead of '%s'; keeping previous engine",
                         actual_backend, cfg.asr.backend,
                     )
-                    new_asr.close()
+                    self._close_component(new_asr)
+                    new_asr = None
                     ok = False
                 else:
-                    # 先让新流式引擎进入可推送状态，再切换引用，避免 feeder 抢跑
+                    self._track_component(new_asr)
+                    # 新实例必须先达到可用状态，才允许替换旧实例。
                     if live and new_asr.is_streaming:
-                        try:
-                            await asyncio.to_thread(new_asr.start_stream)
-                        except Exception:
-                            logger.exception("Starting new streaming ASR failed")
+                        await self._call_component(new_asr, new_asr.start_stream)
+                    else:
+                        prepare = getattr(new_asr, "prepare", None)
+                        if callable(prepare):
+                            await self._call_component(new_asr, prepare)
+                    is_ready = getattr(new_asr, "is_ready", None)
+                    if callable(is_ready) and not is_ready():
+                        raise RuntimeError(
+                            f"ASR backend '{cfg.asr.backend}' did not reach ready state"
+                        )
+                    if self._apply_is_stale(epoch):
+                        logger.warning("apply_config became stale; aborting late ASR swap")
+                        self._close_component(new_asr)
+                        if new_translator is not None:
+                            self._close_component(new_translator)
+                        new_asr = None
+                        return False
                     old_asr = self.asr
                     self.asr = new_asr
-                    self._asr_streaming = bool(new_asr.is_streaming)
+                    new_asr = None  # 所有权已转移，异常路径不得再关闭
+                    self._asr_streaming = bool(self.asr.is_streaming)
                     self._asr_signature = signature
                     self._retire(old_asr, live)
                     logger.info("ASR backend rebuilt: %s", cfg.asr.backend)
+            except asyncio.CancelledError:
+                # apply_config 超时会取消协程；prepare/start_stream 可能仍在线程里。
+                # 不能让新实例泄漏，也不能提前 close 正在加载的模型。
+                if new_asr is not None and not self._close_component(new_asr):
+                    self._defer_close([new_asr])
+                if new_translator is not None:
+                    self._close_component(new_translator)
+                raise
             except Exception:
                 logger.exception("Failed to rebuild ASR backend, keeping previous one")
+                if new_asr is not None and not self._close_component(new_asr):
+                    self._defer_close([new_asr])
                 ok = False
         else:
             self.asr.set_language(cfg.asr.language)
@@ -500,13 +653,30 @@ class SubtitlePipeline:
         if diar_signature != self._diar_signature:
             try:
                 new_diarizer = create_diarizer()
-                old_diarizer = self.diarizer
-                self.diarizer = new_diarizer
-                self._diar_signature = diar_signature
-                self._retire(old_diarizer, live)
+                self._track_component(new_diarizer)
+                if self._apply_is_stale(epoch):
+                    self._close_component(new_diarizer)
+                    ok = False
+                else:
+                    old_diarizer = self.diarizer
+                    self.diarizer = new_diarizer
+                    self._diar_signature = diar_signature
+                    self._retire(old_diarizer, live)
             except Exception:
                 logger.exception("Failed to rebuild diarizer, keeping previous one")
                 ok = False
+
+        if self._apply_is_stale(epoch):
+            if new_translator is not None:
+                self._close_component(new_translator)
+            return False
+        if new_translator is not None:
+            self.translator = new_translator
+            self._retire(old_translator, live)
+            logger.info(
+                "Translator: %s (%s @ %s)",
+                cfg.translator.provider, cfg.translator.model, cfg.translator.base_url,
+            )
 
         self._reset_incremental()
         logger.info(
@@ -523,12 +693,8 @@ class SubtitlePipeline:
         if live:
             self._retired.append(component)
         else:
-            try:
-                close = getattr(component, "close", None)
-                if callable(close):
-                    close()
-            except Exception:
-                logger.debug("Closing replaced component failed", exc_info=True)
+            if not self._close_component(component):
+                self._defer_close([component])
 
     def reset_context(self):
         self.translator.reset_context()
@@ -554,20 +720,24 @@ class SubtitlePipeline:
                     continue
 
                 # VAD 是 ONNX 推理，放到线程池，避免阻塞事件循环
-                speech_segments = await asyncio.to_thread(self.vad.process_chunk, chunk)
+                speech_segments = await self._vad_process(chunk)
 
                 if self.incremental_enabled:
                     pcm = (np.clip(chunk, -1.0, 1.0) * 32767).astype(np.int16).tobytes()
                     self._extend_diar_audio(pcm)
                     if self._asr_streaming:
-                        await asyncio.to_thread(self.asr.push_audio, pcm)
+                        await self._call_component(self.asr, self.asr.push_audio, pcm)
                         if speech_segments:
                             # 段边界立即封口：end_stream + 新流，避免下一段音频混入
                             await self._finish_stream_segment()
                     else:
                         self._extend_rolling_audio(pcm)
                         if speech_segments:
-                            self._enqueue_segment_job(audio=self._take_rolling_audio())
+                            self._enqueue_segment_job(
+                                audio=self._take_rolling_audio(),
+                                language=self._current_lang,
+                                language_prob=self._current_lang_prob,
+                            )
                             self._segment_end.set()
                 else:
                     for segment in speech_segments:
@@ -608,7 +778,14 @@ class SubtitlePipeline:
             if len(self._diar_audio) > _MAX_DIAR_BYTES:
                 del self._diar_audio[: len(self._diar_audio) - _MAX_DIAR_BYTES]
 
-    def _enqueue_segment_job(self, *, final_text: str | None = None, audio: bytes = b""):
+    def _enqueue_segment_job(
+        self,
+        *,
+        final_text: str | None = None,
+        audio: bytes = b"",
+        language: str | None = None,
+        language_prob: float = 0.0,
+    ):
         with self._buffer_lock:
             diar_audio = bytes(self._diar_audio)
             self._diar_audio.clear()
@@ -621,6 +798,8 @@ class SubtitlePipeline:
                     audio=audio,
                     diar_audio=diar_audio,
                     speaker=speaker,
+                    language=language,
+                    language_prob=language_prob,
                 )
             )
 
@@ -628,14 +807,22 @@ class SubtitlePipeline:
         """流式后端在段边界封口：取最终文本并开启新流。"""
         final = ""
         try:
-            final = await asyncio.to_thread(self.asr.end_stream)
+            final = await self._call_component(self.asr, self.asr.end_stream)
         except Exception:
             logger.exception("Failed to finalize streaming ASR segment")
-        self._enqueue_segment_job(final_text=(final or "").strip() or None)
+        fixed_lang = getattr(self.asr, "fixed_language", None)
+        language = fixed_lang or self._current_lang
+        prob = 1.0 if fixed_lang else self._current_lang_prob
+        final_text = final.strip() if isinstance(final, str) else ""
+        self._enqueue_segment_job(
+            final_text=final_text or None,
+            language=language,
+            language_prob=prob,
+        )
         # 先发段结束信号，worker 就不会把新流的 partial 算进旧段
         self._segment_end.set()
         try:
-            await asyncio.to_thread(self.asr.start_stream)
+            await self._call_component(self.asr, self.asr.start_stream)
         except Exception:
             logger.exception("Failed to restart streaming ASR")
 
@@ -667,6 +854,8 @@ class SubtitlePipeline:
                 logger.exception("Speaker diarization error")
 
         final_text = job.final_text
+        language = job.language
+        language_prob = job.language_prob
         if not self._asr_streaming and job.audio:
             # 这里的音频已经过 VAD（>= min_speech_duration），门槛放宽，
             # 否则 0.3s 的短句会在第一次周期识别前被丢掉。
@@ -678,12 +867,19 @@ class SubtitlePipeline:
                     result = None
                 if result:
                     try:
-                        text = (result[0] or "").strip()
+                        text, final_lang, final_prob = result
+                        text = text.strip() if isinstance(text, str) else ""
                     except (TypeError, ValueError):
                         logger.error("Unexpected ASR result: %r", result)
                         text = ""
                     if text:
                         final_text = text
+                        # 最终识别自带的语言才是本段决策依据；None/低置信度走翻译
+                        language = final_lang if isinstance(final_lang, str) and final_lang else None
+                        try:
+                            language_prob = float(final_prob or 0.0)
+                        except (TypeError, ValueError):
+                            language_prob = 0.0
             else:
                 logger.debug("Segment has no speech, skipping final ASR")
 
@@ -700,6 +896,9 @@ class SubtitlePipeline:
         if not has_content:
             logger.debug("Segment finished without text, no subtitle emitted")
             return
+
+        # 本段自己的语言/置信度决定跳译，不复用上一段留下的全局状态
+        self._skip_translate = self._should_skip_translate(language, language_prob)
 
         try:
             await asyncio.wait_for(
@@ -811,6 +1010,8 @@ class SubtitlePipeline:
         cfg = get_config()
         if not cfg.asr.skip_translate_when_same_lang:
             return False
+        if not isinstance(lang, str) or not lang or lang not in _LANG_MAP:
+            return False
         if prob < 0.5:
             return False
         mapped = self._map_lang(lang)
@@ -833,7 +1034,7 @@ class SubtitlePipeline:
 
             if self._asr_streaming:
                 try:
-                    text = await asyncio.to_thread(self.asr.get_partial_text)
+                    text = await self._call_component(self.asr, self.asr.get_partial_text)
                 except Exception:
                     logger.exception("Streaming ASR error")
                     continue
@@ -1028,9 +1229,11 @@ class SubtitlePipeline:
         except (TypeError, ValueError):
             logger.error("Unexpected ASR result: %r", result)
             return None
-        text = (text or "").strip()
+        text = text.strip() if isinstance(text, str) else ""
         if not text:
             return None
+        if not isinstance(lang, str) or not lang:
+            lang = None
         return text, lang, float(prob or 0.0)
 
     def _queue_translation(
