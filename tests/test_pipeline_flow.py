@@ -236,6 +236,31 @@ def test_handle_item_translation_failure_shows_original():
     assert got == [("hello", "", None)]
 
 
+def test_normal_mode_pipeline_end_to_end():
+    p = base_pipeline()
+    p.asr = FakeASR([("hello", "en", 0.9)])
+    p.translator = FakeTranslator()
+
+    class FakeVad:
+        def flush(self):
+            return []
+
+    p.vad = FakeVad()
+    subtitles = []
+    p._on_subtitle = lambda *args: subtitles.append(args)
+
+    async def run():
+        p._asr_queue = asyncio.Queue()
+        p._translate_queue = asyncio.Queue()
+        p._asr_queue.put_nowait(b"speech")
+        p._asr_queue.put_nowait(None)
+        await p._asr_worker()
+        await p._translate_worker()
+
+    asyncio.run(run())
+    assert subtitles == [("hello", "TR:hello", None)]
+
+
 # ── 增量段最终确认 ────────────────────────────────────
 
 def test_non_streaming_short_segment_gets_final_subtitle():
@@ -367,6 +392,19 @@ def test_rolling_buffer_is_bounded():
     p._incremental_max_seconds = 1.0
     p._extend_rolling_audio(b"\x01\x00" * 100000)
     assert len(p._snapshot_rolling_audio()) <= int(1.0 * 16000 * 2)
+
+
+def test_async_stop_flushes_pending_translation():
+    p = base_pipeline()
+    p.translator = FakeTranslator()
+    p._asr_queue = asyncio.Queue()
+    p._translate_queue = asyncio.Queue()
+    p._translate_queue.put_nowait(("flush", "bye", None, False))
+    got = []
+    p._on_subtitle = lambda *args: got.append(args)
+
+    asyncio.run(p._async_stop())
+    assert got == [("bye", "TR:bye", None)]
 
 
 # ── 配置切换 ──────────────────────────────────────────
