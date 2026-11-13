@@ -8,10 +8,17 @@ Vocis（声幕）PyInstaller 打包配置。
     pyinstaller --onedir --windowed --name Vocis main.py
 """
 
+import os
 import sys
 from pathlib import Path
 
 _root = Path(".").resolve()
+
+if sys.platform == "win32":
+    from PyInstaller.utils.win32.winutils import get_system_path
+
+    # 优先解析 Windows 系统 DLL，避免 PATH 中其他软件的同名 DLL 被打包。
+    os.environ["PATH"] = os.pathsep.join([*get_system_path(), os.environ.get("PATH", "")])
 
 # opencc 数据文件（config/*.json + dictionary/*.json），打包后随 opencc 包路径展开
 _opencc_base = _root / ".venv" / "Lib" / "site-packages" / "opencc"

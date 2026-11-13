@@ -131,7 +131,7 @@ def main():
         from importlib.metadata import version as pkg_version
         current_ver = pkg_version("vocis")
     except Exception:
-        current_ver = "0.5.0"
+        current_ver = "0.5.1"
     check_update_async(current_ver, _on_update)
 
     # Keep event loop alive

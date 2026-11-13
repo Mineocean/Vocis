@@ -321,7 +321,7 @@ class MainWindow(QWidget):
             from importlib.metadata import version as pkg_version
             ver = pkg_version("vocis")
         except Exception:
-            ver = "0.5.0"
+            ver = "0.5.1"
         self._version_label.setText(tr("version", version=ver))
         self.refresh_status()
 
